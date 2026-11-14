@@ -1,11 +1,13 @@
 import { NavLink, Route, Routes } from 'react-router'
 import { Toaster } from '@/components/ui/sonner'
-import { Clapperboard, FolderCog, LayoutGrid } from 'lucide-react'
+import { Clapperboard, FolderCog, LayoutGrid, Wand2 } from 'lucide-react'
 import Library from './pages/Library'
 import Categories from './pages/Categories'
+import HotVideo from './pages/HotVideo'
 import { cn } from '@/lib/utils'
 
 const NAV = [
+  { to: '/hot', label: '爆款复刻', icon: Wand2, end: false },
   { to: '/', label: '素材库', icon: LayoutGrid, end: true },
   { to: '/categories', label: '分类管理', icon: FolderCog, end: false },
 ]
@@ -57,6 +59,7 @@ export default function App() {
       <main className="flex-1 min-w-0">
         <Routes>
           <Route path="/" element={<Library />} />
+          <Route path="/hot" element={<HotVideo />} />
           <Route path="/categories" element={<Categories />} />
         </Routes>
       </main>

@@ -58,6 +58,29 @@ CREATE TABLE IF NOT EXISTS material_tags (
 CREATE INDEX IF NOT EXISTS idx_materials_type ON materials(type);
 CREATE INDEX IF NOT EXISTS idx_materials_category ON materials(category_id);
 CREATE INDEX IF NOT EXISTS idx_materials_created ON materials(created_at DESC);
+
+-- 爆款复刻：口播文稿
+CREATE TABLE IF NOT EXISTS scripts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  source_type TEXT NOT NULL DEFAULT 'none' CHECK (source_type IN ('video', 'audio', 'none')),
+  source_name TEXT DEFAULT '',
+  duration REAL DEFAULT 0,
+  bg_material_id INTEGER REFERENCES materials(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+
+-- 文稿时间段（时间轴）
+CREATE TABLE IF NOT EXISTS segments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  script_id INTEGER NOT NULL REFERENCES scripts(id) ON DELETE CASCADE,
+  ord INTEGER NOT NULL,
+  start REAL NOT NULL,
+  end REAL NOT NULL,
+  text TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_segments_script ON segments(script_id, ord);
 `);
 
 // 默认分类

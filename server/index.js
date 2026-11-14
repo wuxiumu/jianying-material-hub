@@ -7,6 +7,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { db, DATA_DIR, MEDIA_DIR, ROOT, getTagsOf, setTagsOf } from './db.js';
 import { makeThumb, probeMedia, deleteThumb } from './thumbs.js';
+import { transcribeFile } from './transcribe.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -160,6 +161,92 @@ app.delete('/api/materials/:id', (req, res) => {
   const abs = path.join(DATA_DIR, row.path);
   if (fs.existsSync(abs)) fs.unlinkSync(abs);
   deleteThumb(id);
+  res.json({ ok: true });
+});
+
+/* ---------------- 爆款复刻：文稿与时间轴 ---------------- */
+const script2json = (row) => row && ({
+  ...row,
+  segments: db.prepare(`SELECT id, ord, start, end, text FROM segments WHERE script_id = ? ORDER BY ord`).all(row.id),
+});
+
+// 上传视频/音频 → 转写 → 自动建文稿
+const transcribeUpload = multer({ dest: path.join(DATA_DIR, 'tmp'), limits: { fileSize: 2 * 1024 * 1024 * 1024 } });
+app.post('/api/transcribe', transcribeUpload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: '缺少文件' });
+  const origName = fixName(req.file.originalname);
+  const type = TYPE_OF(req.file.mimetype, origName);
+  if (type !== 'video' && type !== 'audio') {
+    fs.unlinkSync(req.file.path);
+    return res.status(400).json({ error: '只支持视频或音频文件' });
+  }
+  try {
+    const { duration, segments } = await transcribeFile(req.file.path);
+    const title = origName.replace(/\.[^.]+$/, '');
+    const info = db.prepare(`INSERT INTO scripts (title, source_type, source_name, duration) VALUES (?, ?, ?, ?)`)
+      .run(title, type, origName, duration);
+    const scriptId = Number(info.lastInsertRowid);
+    const ins = db.prepare(`INSERT INTO segments (script_id, ord, start, end, text) VALUES (?, ?, ?, ?, ?)`);
+    segments.forEach((s, i) => ins.run(scriptId, i, s.start, s.end, s.text));
+    res.json(script2json(db.prepare(`SELECT * FROM scripts WHERE id = ?`).get(scriptId)));
+  } catch (e) {
+    res.status(500).json({ error: `转写失败：${e.message}` });
+  } finally {
+    if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+  }
+});
+
+app.get('/api/scripts', (req, res) => {
+  res.json(db.prepare(`
+    SELECT s.*, COUNT(g.id) segment_count FROM scripts s
+    LEFT JOIN segments g ON g.script_id = s.id
+    GROUP BY s.id ORDER BY s.updated_at DESC
+  `).all());
+});
+
+app.get('/api/scripts/:id', (req, res) => {
+  const row = db.prepare(`SELECT * FROM scripts WHERE id = ?`).get(Number(req.params.id));
+  if (!row) return res.status(404).json({ error: '文稿不存在' });
+  res.json(script2json(row));
+});
+
+// 新建空白文稿（无音频模式）
+app.post('/api/scripts', (req, res) => {
+  const title = String(req.body?.title || '').trim() || '未命名文稿';
+  const info = db.prepare(`INSERT INTO scripts (title, source_type) VALUES (?, 'none')`).run(title);
+  const id = Number(info.lastInsertRowid);
+  // 默认给 6 段 × 3 秒
+  const ins = db.prepare(`INSERT INTO segments (script_id, ord, start, end, text) VALUES (?, ?, ?, ?, '')`);
+  for (let i = 0; i < 6; i++) ins.run(id, i, i * 3, (i + 1) * 3);
+  res.json(script2json(db.prepare(`SELECT * FROM scripts WHERE id = ?`).get(id)));
+});
+
+// 整体保存：标题 + 全部时间段 + 背景素材
+app.put('/api/scripts/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const row = db.prepare(`SELECT * FROM scripts WHERE id = ?`).get(id);
+  if (!row) return res.status(404).json({ error: '文稿不存在' });
+  const { title, segments, bg_material_id } = req.body || {};
+  db.prepare(`UPDATE scripts SET title = COALESCE(?, title), bg_material_id = ?, updated_at = datetime('now','localtime') WHERE id = ?`)
+    .run(title ?? null, bg_material_id === undefined ? row.bg_material_id : (bg_material_id || null), id);
+  if (Array.isArray(segments)) {
+    db.prepare(`DELETE FROM segments WHERE script_id = ?`).run(id);
+    const ins = db.prepare(`INSERT INTO segments (script_id, ord, start, end, text) VALUES (?, ?, ?, ?, ?)`);
+    segments.forEach((s, i) => {
+      const start = Number(s.start), end = Number(s.end);
+      if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
+        ins.run(id, i, start, end, String(s.text || ''));
+      }
+    });
+    // 总时长 = 最后一段结束时间
+    const maxEnd = db.prepare(`SELECT COALESCE(MAX(end), 0) m FROM segments WHERE script_id = ?`).get(id).m;
+    db.prepare(`UPDATE scripts SET duration = ? WHERE id = ?`).run(maxEnd, id);
+  }
+  res.json(script2json(db.prepare(`SELECT * FROM scripts WHERE id = ?`).get(id)));
+});
+
+app.delete('/api/scripts/:id', (req, res) => {
+  db.prepare(`DELETE FROM scripts WHERE id = ?`).run(Number(req.params.id));
   res.json({ ok: true });
 });
 

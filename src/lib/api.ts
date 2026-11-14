@@ -94,6 +94,71 @@ export const listTags = (q?: string) => req<Tag[]>(`/tags${q ? `?q=${encodeURICo
 
 export const getStats = () => req<Stats>('/stats')
 
+/* ---------- 爆款复刻：文稿 ---------- */
+import type { Script } from '@/types'
+
+export const listScripts = () => req<Script[]>('/scripts')
+export const getScript = (id: number) => req<Script>(`/scripts/${id}`)
+export function createScript(title: string) {
+  return req<Script>('/scripts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title }),
+  })
+}
+export function saveScript(id: number, data: { title?: string; segments?: { start: number; end: number; text: string }[]; bg_material_id?: number | null }) {
+  return req<Script>(`/scripts/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+}
+export const deleteScript = (id: number) => req<{ ok: boolean }>(`/scripts/${id}`, { method: 'DELETE' })
+
+/** 上传视频/音频转写为文稿（耗时较长，无进度） */
+export async function transcribe(file: File): Promise<Script> {
+  const fd = new FormData()
+  fd.append('file', file)
+  const res = await fetch(`${BASE}/transcribe`, { method: 'POST', body: fd })
+  const body = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error((body as { error?: string }).error || `转写失败 (${res.status})`)
+  return body as Script
+}
+
+/* ---------- 导出工具 ---------- */
+export function srtTime(sec: number): string {
+  const ms = Math.round(sec * 1000)
+  const h = Math.floor(ms / 3600000)
+  const m = Math.floor((ms % 3600000) / 60000)
+  const s = Math.floor((ms % 60000) / 1000)
+  const r = ms % 1000
+  const p = (n: number, l = 2) => String(n).padStart(l, '0')
+  return `${p(h)}:${p(m)}:${p(s)},${p(r, 3)}`
+}
+
+export function buildSrt(segments: { start: number; end: number; text: string }[]): string {
+  return segments
+    .filter(s => s.text.trim())
+    .map((s, i) => `${i + 1}\n${srtTime(s.start)} --> ${srtTime(s.end)}\n${s.text.trim()}`)
+    .join('\n\n') + '\n'
+}
+
+export function buildScriptTxt(title: string, segments: { start: number; end: number; text: string }[]): string {
+  const head = `《${title}》口播文稿\n共 ${segments.length} 段 · 总时长 ${Math.max(...segments.map(s => s.end), 0)}s\n${'='.repeat(32)}\n`
+  return head + segments
+    .map((s, i) => `【第 ${i + 1} 段】${s.start}s - ${s.end}s\n${s.text.trim()}`)
+    .join('\n\n') + '\n'
+}
+
+export function downloadText(filename: string, content: string) {
+  const blob = new Blob(['﻿' + content], { type: 'text/plain;charset=utf-8' })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(a.href)
+}
+
 export function formatSize(bytes: number): string {
   if (bytes >= 1 << 30) return `${(bytes / (1 << 30)).toFixed(2)} GB`
   if (bytes >= 1 << 20) return `${(bytes / (1 << 20)).toFixed(1)} MB`

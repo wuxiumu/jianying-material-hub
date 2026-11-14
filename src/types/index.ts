@@ -48,3 +48,25 @@ export interface Stats {
   recent: Material[]
   totalSize: number
 }
+
+/* ---------- 爆款复刻 ---------- */
+export interface Segment {
+  id?: number
+  ord?: number
+  start: number
+  end: number
+  text: string
+}
+
+export interface Script {
+  id: number
+  title: string
+  source_type: 'video' | 'audio' | 'none'
+  source_name: string
+  duration: number
+  bg_material_id: number | null
+  segment_count?: number
+  segments: Segment[]
+  created_at?: string
+  updated_at?: string
+}
