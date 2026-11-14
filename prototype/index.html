@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI 剪映工作台 · MVP 原型</title>
+<style>
+  :root {
+    --ink: #111111;
+    --ink-2: #555555;
+    --ink-3: #999999;
+    --line: #e6e6e6;
+    --bg: #fafafa;
+    --card: #ffffff;
+    --accent: #111111;
+    --ok: #0a7d4f;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { -webkit-font-smoothing: antialiased; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    line-height: 1.6;
+    min-height: 100dvh;
+  }
+  button { font: inherit; cursor: pointer; }
+  button:focus-visible, input:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+
+  /* ---------- 头部：标题 + 流程图 ---------- */
+  header {
+    background: var(--card);
+    border-bottom: 1px solid var(--line);
+    padding: 28px 24px 24px;
+  }
+  .header-inner { max-width: 960px; margin: 0 auto; }
+  .brand { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .brand h1 { font-size: 20px; font-weight: 600; letter-spacing: 0.02em; }
+  .brand span { font-size: 13px; color: var(--ink-3); }
+
+  /* 流程图 */
+  .flow {
+    display: flex;
+    align-items: flex-start;
+    margin-top: 24px;
+  }
+  .flow-node {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    flex: 0 0 auto;
+    width: 96px;
+    text-align: center;
+  }
+  .flow-dot {
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    border: 1.5px solid var(--line);
+    background: var(--card);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; font-weight: 600; color: var(--ink-3);
+    transition: all .25s ease;
+    position: relative;
+    z-index: 1;
+  }
+  .flow-label { font-size: 12px; color: var(--ink-3); transition: color .25s; }
+  .flow-sub { font-size: 10px; color: var(--ink-3); margin-top: -6px; }
+  .flow-line {
+    flex: 1 1 auto;
+    height: 1.5px;
+    background: var(--line);
+    margin-top: 20px;
+    min-width: 16px;
+    position: relative;
+    transition: background .25s;
+  }
+  .flow-node.done .flow-dot { background: var(--ink); border-color: var(--ink); color: #fff; }
+  .flow-node.done .flow-label { color: var(--ink); }
+  .flow-node.current .flow-dot { border-color: var(--ink); color: var(--ink); box-shadow: 0 0 0 4px rgba(17,17,17,.08); }
+  .flow-node.current .flow-label { color: var(--ink); font-weight: 600; }
+  .flow-line.done { background: var(--ink); }
+
+  /* ---------- 主区域 ---------- */
+  main { max-width: 960px; margin: 0 auto; padding: 32px 24px 80px; }
+  .step { display: none; }
+  .step.active { display: block; animation: rise .3s ease; }
+  @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  @media (prefers-reduced-motion: reduce) { .step.active { animation: none; } }
+
+  .step-head { margin-bottom: 20px; }
+  .step-head h2 { font-size: 17px; font-weight: 600; }
+  .step-head p { font-size: 13px; color: var(--ink-2); margin-top: 4px; }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 20px;
+  }
+
+  /* 素材卡片 */
+  .materials { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  @media (max-width: 640px) { .materials { grid-template-columns: repeat(2, 1fr); } }
+  .mat {
+    border: 1.5px solid var(--line);
+    border-radius: 10px;
+    overflow: hidden;
+    background: var(--card);
+    text-align: left;
+    padding: 0;
+    transition: border-color .15s, transform .15s;
+  }
+  .mat:hover { transform: translateY(-2px); }
+  .mat.selected { border-color: var(--ink); }
+  .mat-thumb {
+    aspect-ratio: 16/9;
+    display: flex; align-items: center; justify-content: center;
+    position: relative;
+  }
+  .mat-thumb svg { width: 26px; height: 26px; stroke: rgba(255,255,255,.85); }
+  .mat-check {
+    position: absolute; top: 8px; right: 8px;
+    width: 20px; height: 20px; border-radius: 50%;
+    background: rgba(255,255,255,.35);
+    display: none; align-items: center; justify-content: center;
+  }
+  .mat.selected .mat-check { display: flex; background: var(--ink); }
+  .mat-check svg { width: 12px; height: 12px; stroke: #fff; }
+  .mat-name { font-size: 12px; padding: 8px 10px; color: var(--ink-2); }
+
+  /* 输入行 */
+  .input-row { display: flex; gap: 10px; }
+  .input-row input {
+    flex: 1;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 14px;
+    background: var(--card);
+  }
+  .btn {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 20px;
+    font-size: 14px;
+    transition: opacity .15s;
+    white-space: nowrap;
+  }
+  .btn:hover { opacity: .85; }
+  .btn:disabled { opacity: .35; cursor: not-allowed; }
+  .btn-ghost {
+    background: transparent;
+    color: var(--ink);
+    border: 1px solid var(--line);
+  }
+  .btn-ghost:hover { border-color: var(--ink); opacity: 1; }
+
+  /* 脚本输出 */
+  .script-out {
+    margin-top: 16px;
+    font-size: 14px;
+    white-space: pre-wrap;
+    min-height: 120px;
+    color: var(--ink);
+  }
+  .script-out .cursor { display: inline-block; width: 8px; background: var(--ink); animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* 模板卡片 */
+  .templates { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  @media (max-width: 640px) { .templates { grid-template-columns: 1fr; } }
+  .tpl {
+    border: 1.5px solid var(--line);
+    border-radius: 10px;
+    background: var(--card);
+    padding: 16px;
+    text-align: left;
+    transition: border-color .15s;
+  }
+  .tpl.selected { border-color: var(--ink); }
+  .tpl h3 { font-size: 14px; font-weight: 600; }
+  .tpl p { font-size: 12px; color: var(--ink-2); margin-top: 6px; }
+  .tpl .tpl-meta { font-size: 11px; color: var(--ink-3); margin-top: 10px; }
+
+  /* 分镜表 */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 12px; color: var(--ink-3); font-weight: 500; }
+  tr:last-child td { border-bottom: none; }
+  .shot-dot { display: inline-block; width: 14px; height: 14px; border-radius: 4px; vertical-align: -2px; margin-right: 6px; }
+
+  /* AI 交互面板 */
+  .chat {
+    display: flex; flex-direction: column; gap: 10px;
+    max-height: 300px; overflow-y: auto;
+    padding: 4px 2px;
+  }
+  .msg {
+    max-width: 85%;
+    padding: 10px 14px;
+    border-radius: 12px;
+    font-size: 13px;
+    animation: rise .25s ease;
+  }
+  .msg.ai { background: #f0f0f0; align-self: flex-start; border-bottom-left-radius: 4px; }
+  .msg.user { background: var(--ink); color: #fff; align-self: flex-end; border-bottom-right-radius: 4px; }
+  .msg.ai .tick { color: var(--ok); font-weight: 600; margin-right: 6px; }
+  .progress {
+    height: 3px; background: var(--line); border-radius: 2px; overflow: hidden; margin-top: 14px;
+  }
+  .progress > div { height: 100%; background: var(--ink); width: 0; transition: width .5s ease; }
+
+  /* 样片播放器 */
+  .player { margin-top: 16px; display: none; }
+  .player.show { display: block; animation: rise .3s ease; }
+  .player canvas {
+    width: 100%;
+    border-radius: 10px;
+    display: block;
+    background: #000;
+  }
+  .player-bar { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+  .player-bar .time { font-size: 12px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+  .player-track { flex: 1; height: 3px; background: var(--line); border-radius: 2px; }
+  .player-track > div { height: 100%; background: var(--ink); width: 0; }
+  .play-btn {
+    width: 34px; height: 34px; border-radius: 50%;
+    background: var(--ink); border: none; color: #fff;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .play-btn svg { width: 14px; height: 14px; fill: #fff; }
+
+  /* 底部操作行 */
+  .actions {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-top: 24px;
+  }
+  .hint { font-size: 12px; color: var(--ink-3); }
+
+  .toast {
+    position: fixed; left: 50%; bottom: 32px; transform: translateX(-50%) translateY(20px);
+    background: var(--ink); color: #fff; font-size: 13px;
+    padding: 10px 18px; border-radius: 8px;
+    opacity: 0; pointer-events: none;
+    transition: all .25s ease;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-inner">
+    <div class="brand">
+      <h1>AI 剪映工作台</h1>
+      <span>MVP 原型 · 从素材到成片，一条流水线</span>
+    </div>
+    <!-- 流程图 -->
+    <div class="flow" id="flow" aria-label="生产流程"></div>
+  </div>
+</header>
+
+<main>
+  <!-- Step 1 选素材 -->
+  <section class="step active" id="step-1">
+    <div class="step-head">
+      <h2>第一步 · 从素材库选材</h2>
+      <p>点选本次视频要用的素材（示意数据，正式版接入素材库）</p>
+    </div>
+    <div class="materials" id="materials"></div>
+    <div class="actions">
+      <span class="hint" id="matHint">还未选择素材</span>
+      <button class="btn" id="next1" disabled>下一步：AI 写脚本 →</button>
+    </div>
+  </section>
+
+  <!-- Step 2 AI 写脚本 -->
+  <section class="step" id="step-2">
+    <div class="step-head">
+      <h2>第二步 · AI 生成口播脚本</h2>
+      <p>输入本期视频主题，AI 按爆款结构生成口播文案</p>
+    </div>
+    <div class="card">
+      <div class="input-row">
+        <input id="themeInput" value="夏季新品防晒衣" aria-label="视频主题">
+        <button class="btn" id="genScript">生成脚本</button>
+      </div>
+      <div class="script-out" id="scriptOut" aria-live="polite"></div>
+    </div>
+    <div class="actions">
+      <button class="btn btn-ghost" data-back="1">← 上一步</button>
+      <button class="btn" id="next2" disabled>下一步：选模板 →</button>
+    </div>
+  </section>
+
+  <!-- Step 3 选模板 -->
+  <section class="step" id="step-3">
+    <div class="step-head">
+      <h2>第三步 · 套用剪映模板</h2>
+      <p>模板决定节奏与分镜结构（正式版同步剪映草稿模板）</p>
+    </div>
+    <div class="templates" id="templates"></div>
+    <div class="actions">
+      <button class="btn btn-ghost" data-back="2">← 上一步</button>
+      <button class="btn" id="next3" disabled>下一步：生成分镜 →</button>
+    </div>
+  </section>
+
+  <!-- Step 4 分镜表 -->
+  <section class="step" id="step-4">
+    <div class="step-head">
+      <h2>第四步 · 确认分镜表</h2>
+      <p>脚本 × 模板 × 素材，自动排好每个镜头</p>
+    </div>
+    <div class="card" style="padding: 8px 12px;">
+      <table>
+        <thead><tr><th style="width:56px">镜头</th><th style="width:72px">时长</th><th style="width:180px">画面素材</th><th>口播文案</th></tr></thead>
+        <tbody id="storyboard"></tbody>
+      </table>
+    </div>
+    <div class="actions">
+      <button class="btn btn-ghost" data-back="3">← 上一步</button>
+      <button class="btn" id="next4">开始生产视频 →</button>
+    </div>
+  </section>
+
+  <!-- Step 5 AI 交互生产 -->
+  <section class="step" id="step-5">
+    <div class="step-head">
+      <h2>第五步 · AI 交互生产</h2>
+      <p>AI 自动完成配音、匹配镜头、生成剪映草稿，可随时对话调整</p>
+    </div>
+    <div class="card">
+      <div class="chat" id="chat"></div>
+      <div class="progress"><div id="prodBar"></div></div>
+      <div class="player" id="player">
+        <canvas id="canvas" width="960" height="540"></canvas>
+        <div class="player-bar">
+          <button class="play-btn" id="playBtn" aria-label="播放 / 暂停">
+            <svg id="playIcon" viewBox="0 0 16 16"><path d="M4 2l10 6-10 6z"/></svg>
+          </button>
+          <div class="player-track"><div id="playBar"></div></div>
+          <span class="time" id="playTime">0:00 / 0:18</span>
+        </div>
+      </div>
+      <div class="input-row" style="margin-top: 16px;">
+        <input id="chatInput" placeholder="对 AI 说：换个背景音乐 / 节奏再快点…" aria-label="与 AI 对话">
+        <button class="btn" id="chatSend">发送</button>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="btn btn-ghost" data-back="4">← 上一步</button>
+      <button class="btn" id="exportBtn" disabled>导出剪映草稿</button>
+    </div>
+  </section>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* ================= 数据（示意） ================= */
+const MATERIALS = [
+  { id: 1, name: '口播开场片段.mp4', type: 'video', hue: 210 },
+  { id: 2, name: '产品特写-正面.png', type: 'image', hue: 160 },
+  { id: 3, name: '户外上身效果.mp4', type: 'video', hue: 25 },
+  { id: 4, name: '细节-面料纹理.png', type: 'image', hue: 340 },
+  { id: 5, name: 'B-Roll 街道空镜.mp4', type: 'video', hue: 260 },
+  { id: 6, name: '背景音乐-轻快.mp3', type: 'audio', hue: 90 },
+];
+const TEMPLATES = [
+  { id: 1, name: '口播带货', desc: '钩子开场 → 痛点 → 卖点三连 → 行动号召', meta: '约 18s · 6 镜头' },
+  { id: 2, name: '产品测评', desc: '悬念开场 → 实测对比 → 总结推荐', meta: '约 25s · 8 镜头' },
+  { id: 3, name: '日常 Vlog', desc: '场景引入 → 过程记录 → 感悟收尾', meta: '约 40s · 10 镜头' },
+];
+const FLOW = ['选素材', 'AI 写脚本', '套模板', '出分镜', '生产视频'];
+
+const state = {
+  step: 1,
+  materials: new Set(),
+  theme: '',
+  script: [],
+  template: null,
+};
+
+/* ================= 流程图 ================= */
+const flowEl = document.getElementById('flow');
+function renderFlow() {
+  flowEl.innerHTML = '';
+  FLOW.forEach((label, i) => {
+    const n = i + 1;
+    const node = document.createElement('div');
+    node.className = 'flow-node' + (n < state.step ? ' done' : n === state.step ? ' current' : '');
+    node.innerHTML = `<div class="flow-dot">${n < state.step ? '✓' : n}</div><div class="flow-label">${label}</div>`;
+    flowEl.appendChild(node);
+    if (i < FLOW.length - 1) {
+      const line = document.createElement('div');
+      line.className = 'flow-line' + (n < state.step ? ' done' : '');
+      flowEl.appendChild(line);
+    }
+  });
+}
+
+/* ================= 步骤切换 ================= */
+function goStep(n) {
+  state.step = n;
+  document.querySelectorAll('.step').forEach(s => s.classList.remove('active'));
+  document.getElementById(`step-${n}`).classList.add('active');
+  renderFlow();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+document.querySelectorAll('[data-back]').forEach(b =>
+  b.addEventListener('click', () => goStep(Number(b.dataset.back))));
+
+function toast(text) {
+  const t = document.getElementById('toast');
+  t.textContent = text;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2200);
+}
+
+/* ================= Step 1 素材 ================= */
+const matsEl = document.getElementById('materials');
+const ICONS = {
+  video: '<svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><rect x="2" y="5" width="15" height="14" rx="2"/><path d="M17 10l5-3v10l-5-3"/></svg>',
+  image: '<svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M4 18l5-5 4 4 3-3 4 4"/></svg>',
+  audio: '<svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M9 18V6l10-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/></svg>',
+};
+const CHECK = '<svg viewBox="0 0 16 16" fill="none" stroke-width="2.5"><path d="M3 8.5l3.5 3.5L13 4"/></svg>';
+
+MATERIALS.forEach(m => {
+  const el = document.createElement('button');
+  el.className = 'mat';
+  el.innerHTML = `
+    <div class="mat-thumb" style="background: linear-gradient(135deg, hsl(${m.hue} 45% 42%), hsl(${m.hue + 30} 40% 28%))">
+      ${ICONS[m.type]}
+      <span class="mat-check">${CHECK}</span>
+    </div>
+    <div class="mat-name">${m.name}</div>`;
+  el.addEventListener('click', () => {
+    if (state.materials.has(m.id)) state.materials.delete(m.id);
+    else state.materials.add(m.id);
+    el.classList.toggle('selected');
+    const n = state.materials.size;
+    document.getElementById('matHint').textContent = n ? `已选 ${n} 个素材` : '还未选择素材';
+    document.getElementById('next1').disabled = n === 0;
+  });
+  matsEl.appendChild(el);
+});
+document.getElementById('next1').addEventListener('click', () => goStep(2));
+
+/* ================= Step 2 AI 写脚本 ================= */
+function buildScript(theme) {
+  return [
+    `【开头钩子】还在纠结${theme}怎么选？这条视频 18 秒讲明白。`,
+    `【痛点共鸣】90% 的人第一步就踩坑，买回去才发现根本不适合自己。`,
+    `【卖点一】先看核心卖点，上手第一感受就两个字：惊艳。`,
+    `【卖点二】再看细节做工，这个价位能给到这种水准，说实话超出预期。`,
+    `【卖点三】最关键的是实测表现，连续体验一周，数据摆在这里。`,
+    `【行动号召】清单已整理好，评论区扣「1」直接发你，关注我少踩坑。`,
+  ];
+}
+let typeTimer = null;
+document.getElementById('genScript').addEventListener('click', () => {
+  const theme = document.getElementById('themeInput').value.trim();
+  if (!theme) { toast('先输入视频主题'); return; }
+  state.theme = theme;
+  state.script = buildScript(theme);
+  const out = document.getElementById('scriptOut');
+  const full = state.script.join('\n\n');
+  clearInterval(typeTimer);
+  let i = 0;
+  out.innerHTML = '<span class="cursor">&nbsp;</span>';
+  document.getElementById('genScript').disabled = true;
+  typeTimer = setInterval(() => {
+    i += 3;
+    out.innerHTML = full.slice(0, i).replace(/\n/g, '<br>') + '<span class="cursor">&nbsp;</span>';
+    if (i >= full.length) {
+      clearInterval(typeTimer);
+      out.innerHTML = full.replace(/\n/g, '<br>');
+      document.getElementById('genScript').disabled = false;
+      document.getElementById('next2').disabled = false;
+    }
+  }, 24);
+});
+document.getElementById('next2').addEventListener('click', () => goStep(3));
+
+/* ================= Step 3 模板 ================= */
+const tplsEl = document.getElementById('templates');
+TEMPLATES.forEach(t => {
+  const el = document.createElement('button');
+  el.className = 'tpl';
+  el.innerHTML = `<h3>${t.name}</h3><p>${t.desc}</p><div class="tpl-meta">${t.meta}</div>`;
+  el.addEventListener('click', () => {
+    state.template = t;
+    tplsEl.querySelectorAll('.tpl').forEach(x => x.classList.remove('selected'));
+    el.classList.add('selected');
+    document.getElementById('next3').disabled = false;
+  });
+  tplsEl.appendChild(el);
+});
+document.getElementById('next3').addEventListener('click', () => { renderStoryboard(); goStep(4); });
+
+/* ================= Step 4 分镜表 ================= */
+function chosenMaterials() {
+  const list = MATERIALS.filter(m => state.materials.has(m.id));
+  return list.filter(m => m.type !== 'audio').length ? list.filter(m => m.type !== 'audio') : MATERIALS.slice(0, 2);
+}
+function renderStoryboard() {
+  const shots = chosenMaterials();
+  const tb = document.getElementById('storyboard');
+  tb.innerHTML = '';
+  state.script.forEach((line, i) => {
+    const m = shots[i % shots.length];
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>#${i + 1}</td>
+      <td>3s</td>
+      <td><span class="shot-dot" style="background: hsl(${m.hue} 45% 42%)"></span>${m.name}</td>
+      <td>${line}</td>`;
+    tb.appendChild(tr);
+  });
+}
+document.getElementById('next4').addEventListener('click', () => { goStep(5); startProduction(); });
+
+/* ================= Step 5 AI 交互生产 ================= */
+const chatEl = document.getElementById('chat');
+let produced = false;
+
+function addMsg(role, html) {
+  const el = document.createElement('div');
+  el.className = `msg ${role}`;
+  el.innerHTML = html;
+  chatEl.appendChild(el);
+  chatEl.scrollTop = chatEl.scrollHeight;
+}
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function startProduction() {
+  chatEl.innerHTML = '';
+  produced = false;
+  document.getElementById('exportBtn').disabled = true;
+  document.getElementById('player').classList.remove('show');
+  const bar = document.getElementById('prodBar');
+  bar.style.width = '0';
+
+  const audio = MATERIALS.find(m => state.materials.has(m.id) && m.type === 'audio');
+  const steps = [
+    { t: `收到！开始为你生产「${state.theme}」，模板「${state.template.name}」。`, p: 12 },
+    { t: `<span class="tick">✓</span>脚本已优化：${state.script.length} 句口播，预计 ${state.script.length * 3} 秒`, p: 32 },
+    { t: `<span class="tick">✓</span>已匹配 ${chosenMaterials().length} 个画面素材，镜头顺序按模板节奏排好`, p: 52 },
+    { t: `<span class="tick">✓</span>AI 配音完成（音色：知性女声 · 语速 1.1x）`, p: 70 },
+    { t: `<span class="tick">✓</span>${audio ? `背景音乐「${audio.name}」已铺轨，音量 -12dB` : '已配默认轻快背景音乐'}`, p: 85 },
+    { t: `<span class="tick">✓</span>剪映草稿已生成，样片渲染完成，点击下方播放预览`, p: 100 },
+  ];
+  for (const s of steps) {
+    await sleep(650);
+    addMsg('ai', s.t);
+    bar.style.width = s.p + '%';
+  }
+  produced = true;
+  document.getElementById('player').classList.add('show');
+  document.getElementById('exportBtn').disabled = false;
+  drawFrame(0);
+}
+
+document.getElementById('chatSend').addEventListener('click', sendChat);
+document.getElementById('chatInput').addEventListener('keydown', e => { if (e.key === 'Enter') sendChat(); });
+async function sendChat() {
+  const input = document.getElementById('chatInput');
+  const text = input.value.trim();
+  if (!text) return;
+  if (!produced) { toast('等 AI 完成首轮生产后再提调整意见'); return; }
+  input.value = '';
+  addMsg('user', text);
+  await sleep(600);
+  addMsg('ai', `收到调整意见：「${text}」，正在重新合成…`);
+  await sleep(900);
+  addMsg('ai', '<span class="tick">✓</span>已更新，点击播放查看最新版本');
+  drawFrame(0);
+}
+
+document.getElementById('exportBtn').addEventListener('click', async () => {
+  const path = '~/剪映草稿/' + (state.theme || '未命名') + '_' + new Date().toISOString().slice(0, 10) + '.draft';
+  try { await navigator.clipboard.writeText(path); } catch { /* 忽略剪贴板权限失败 */ }
+  toast('草稿已生成，路径已复制（原型演示）');
+});
+
+/* ================= 样片播放器（canvas） ================= */
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const SHOT_SEC = 3;
+let playing = false;
+let playStart = 0;
+let playedBefore = 0;
+let rafId = null;
+
+function totalSec() { return state.script.length * SHOT_SEC; }
+
+function drawFrame(t) {
+  const shots = chosenMaterials();
+  const idx = Math.min(Math.floor(t / SHOT_SEC), state.script.length - 1);
+  const m = shots[idx % shots.length];
+  const local = (t % SHOT_SEC) / SHOT_SEC; // 镜头内进度
+  const W = canvas.width, H = canvas.height;
+
+  // 背景：素材色调 + 缓慢推近（Ken Burns）
+  const zoom = 1 + local * 0.08;
+  const g = ctx.createLinearGradient(0, 0, W, H);
+  g.addColorStop(0, `hsl(${m.hue} 45% ${34 + local * 4}%)`);
+  g.addColorStop(1, `hsl(${m.hue + 30} 40% ${18 + local * 3}%)`);
+  ctx.save();
+  ctx.translate(W / 2, H / 2);
+  ctx.scale(zoom, zoom);
+  ctx.translate(-W / 2, -H / 2);
+  ctx.fillStyle = g;
+  ctx.fillRect(-W * 0.1, -H * 0.1, W * 1.2, H * 1.2);
+  ctx.restore();
+
+  // 镜头号
+  ctx.fillStyle = 'rgba(0,0,0,.45)';
+  ctx.fillRect(32, 32, 108, 40);
+  ctx.fillStyle = '#fff';
+  ctx.font = '500 20px -apple-system, "PingFang SC", sans-serif';
+  ctx.fillText(`镜头 ${idx + 1} / ${state.script.length}`, 46, 59);
+
+  // 素材名
+  ctx.fillStyle = 'rgba(255,255,255,.55)';
+  ctx.font = '16px -apple-system, "PingFang SC", sans-serif';
+  ctx.fillText(m.name, 32, H - 96);
+
+  // 字幕（口播文案）
+  const line = state.script[idx];
+  ctx.font = '600 26px -apple-system, "PingFang SC", sans-serif';
+  const tw = Math.min(ctx.measureText(line).width + 48, W - 64);
+  ctx.fillStyle = 'rgba(0,0,0,.55)';
+  ctx.fillRect((W - tw) / 2, H - 76, tw, 48);
+  ctx.fillStyle = '#fff';
+  ctx.textAlign = 'center';
+  const shown = line.slice(0, Math.ceil(line.length * Math.min(1, local * 1.6)));
+  ctx.fillText(shown, W / 2, H - 44);
+  ctx.textAlign = 'left';
+}
+
+function fmt(s) {
+  s = Math.floor(s);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+function tick(now) {
+  if (!playing) return;
+  if (!playStart) playStart = now;
+  const t = playedBefore + (now - playStart) / 1000;
+  if (t >= totalSec()) { pause(); playedBefore = 0; drawFrame(totalSec() - 0.01); updateBar(totalSec()); return; }
+  drawFrame(t);
+  updateBar(t);
+  rafId = requestAnimationFrame(tick);
+}
+function updateBar(t) {
+  document.getElementById('playBar').style.width = (t / totalSec() * 100) + '%';
+  document.getElementById('playTime').textContent = `${fmt(t)} / ${fmt(totalSec())}`;
+}
+const PLAY = '<path d="M4 2l10 6-10 6z"/>';
+const PAUSE = '<path d="M3 2h4v12H3zM9 2h4v12H9z"/>';
+function play() {
+  if (!state.script.length) return;
+  playing = true;
+  playStart = 0;
+  document.getElementById('playIcon').innerHTML = PAUSE;
+  rafId = requestAnimationFrame(tick);
+}
+function pause() {
+  playing = false;
+  document.getElementById('playIcon').innerHTML = PLAY;
+  cancelAnimationFrame(rafId);
+}
+document.getElementById('playBtn').addEventListener('click', () => {
+  if (playing) {
+    pause();
+    playedBefore = 0; // 简化：暂停即回到起点
+    updateBar(0);
+  } else {
+    play();
+  }
+});
+
+/* ================= 初始化 ================= */
+renderFlow();
+</script>
+</body>
+</html>
