@@ -15,12 +15,28 @@ app.use(express.json());
 // 素材与缩略图静态托管
 app.use('/media', express.static(DATA_DIR, { maxAge: '1d' }));
 
-const TYPE_OF = (mime) => {
+const TYPE_OF = (mime, filename = '') => {
   if (mime.startsWith('video/')) return 'video';
   if (mime.startsWith('image/')) return 'image';
   if (mime.startsWith('audio/')) return 'audio';
+  // mimetype 不可靠时（如 application/octet-stream）按扩展名兜底
+  const ext = path.extname(filename).toLowerCase();
+  if (['.mp4', '.mov', '.m4v', '.avi', '.mkv', '.webm', '.flv', '.wmv', '.ts'].includes(ext)) return 'video';
+  if (['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.heic', '.tiff', '.svg'].includes(ext)) return 'image';
+  if (['.mp3', '.wav', '.aac', '.m4a', '.flac', '.ogg', '.wma', '.aiff'].includes(ext)) return 'audio';
   return null;
 };
+
+// multer 对中文文件名按 latin1 解码，这里转回 UTF-8
+function fixName(name) {
+  try {
+    const fixed = Buffer.from(name, 'latin1').toString('utf8');
+    // 转换后出现乱码替换符则回退原名
+    return fixed.includes('�') ? name : fixed;
+  } catch {
+    return name;
+  }
+}
 
 // 上传：先进临时目录，校验后再归档
 const upload = multer({
@@ -88,19 +104,20 @@ app.post('/api/materials/upload', upload.array('files', 20), async (req, res) =>
   const results = [];
   const errors = [];
   for (const f of req.files || []) {
-    const type = TYPE_OF(f.mimetype);
+    const origName = fixName(f.originalname);
+    const type = TYPE_OF(f.mimetype, origName);
     if (!type) {
-      errors.push({ name: f.originalname, error: '不支持的文件类型' });
+      errors.push({ name: origName, error: '不支持的文件类型' });
       fs.unlinkSync(f.path);
       continue;
     }
-    const ext = path.extname(f.originalname).toLowerCase() || '';
+    const ext = path.extname(origName).toLowerCase() || '';
     const fname = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}${ext}`;
     const rel = path.join('media', type, fname);
     const abs = path.join(DATA_DIR, rel);
     fs.renameSync(f.path, abs);
     // 入库
-    const name = decodeURIComponent(escape(f.originalname)).replace(/\.[^.]+$/, '');
+    const name = origName.replace(/\.[^.]+$/, '');
     const info = db.prepare(`
       INSERT INTO materials (name, type, path, size, category_id)
       VALUES (?, ?, ?, ?, ?)
