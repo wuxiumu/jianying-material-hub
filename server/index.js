@@ -4,6 +4,7 @@ import multer from 'multer';
 import path from 'node:path';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { db, DATA_DIR, MEDIA_DIR, ROOT, getTagsOf, setTagsOf } from './db.js';
 import { makeThumb, probeMedia, deleteThumb } from './thumbs.js';
@@ -247,6 +248,84 @@ app.put('/api/scripts/:id', (req, res) => {
 
 app.delete('/api/scripts/:id', (req, res) => {
   db.prepare(`DELETE FROM scripts WHERE id = ?`).run(Number(req.params.id));
+  res.json({ ok: true });
+});
+
+/* ---------------- 剪映视频包导出 ---------------- */
+const EXPORTS_DIR = path.join(DATA_DIR, 'exports');
+
+const srtTime = (sec) => {
+  const ms = Math.round(sec * 1000);
+  const p = (n, l = 2) => String(n).padStart(l, '0');
+  return `${p(Math.floor(ms / 3600000))}:${p(Math.floor((ms % 3600000) / 60000))}:${p(Math.floor((ms % 60000) / 1000))},${p(ms % 1000, 3)}`;
+};
+
+// 一键生成剪映数字人视频包：字幕.srt + 口播文稿.txt + 背景素材 + 操作指引
+app.post('/api/scripts/:id/video-package', (req, res) => {
+  const id = Number(req.params.id);
+  const row = db.prepare(`SELECT * FROM scripts WHERE id = ?`).get(id);
+  if (!row) return res.status(404).json({ error: '文稿不存在' });
+  const segs = db.prepare(`SELECT start, end, text FROM segments WHERE script_id = ? ORDER BY ord`).all(id);
+  const filled = segs.filter(s => s.text.trim());
+  if (!filled.length) return res.status(400).json({ error: '文稿还没有文字内容，请先填写并保存' });
+
+  const safe = row.title.replace(/[\/\\:*?"<>|]/g, '_').trim().slice(0, 40) || `文稿${id}`;
+  const dir = path.join(EXPORTS_DIR, `${id}-${safe}`);
+  fs.rmSync(dir, { recursive: true, force: true });
+  fs.mkdirSync(dir, { recursive: true });
+
+  // 1. 字幕 SRT（剪映「文本 → 本地字幕」导入后，数字人按时间轴念稿）
+  const srt = filled.map((s, i) => `${i + 1}\n${srtTime(s.start)} --> ${srtTime(s.end)}\n${s.text.trim()}`).join('\n\n') + '\n';
+  fs.writeFileSync(path.join(dir, '字幕.srt'), '﻿' + srt);
+
+  // 2. 口播文稿 TXT（完整文案备份，便于复制改写）
+  const total = Math.max(...filled.map(s => s.end), 0);
+  const txt = `《${row.title}》口播文稿\n共 ${filled.length} 句 · 总时长 ${total.toFixed(1)}s\n${'='.repeat(32)}\n\n`
+    + filled.map((s, i) => `【第 ${i + 1} 句】${s.start.toFixed(1)}s - ${s.end.toFixed(1)}s\n${s.text.trim()}`).join('\n\n') + '\n';
+  fs.writeFileSync(path.join(dir, '口播文稿.txt'), '﻿' + txt);
+
+  // 3. 背景素材副本（视频或图片，铺底用）
+  let bgFile = null;
+  if (row.bg_material_id) {
+    const m = db.prepare(`SELECT * FROM materials WHERE id = ?`).get(row.bg_material_id);
+    if (m) {
+      const abs = path.join(DATA_DIR, m.path);
+      if (fs.existsSync(abs)) {
+        bgFile = `背景素材${path.extname(m.path).toLowerCase()}`;
+        fs.copyFileSync(abs, path.join(dir, bgFile));
+      }
+    }
+  }
+
+  // 4. 剪映操作指引
+  const guide = [
+    `《${row.title}》剪映数字人成片步骤`,
+    ``,
+    `1. 打开剪映专业版 → 新建项目`,
+    bgFile
+      ? `2. 把本文件夹的「${bgFile}」拖进轨道铺底，长度拉到 ${total.toFixed(0)} 秒`
+      : `2. 在剪映里选一个背景视频/图片拖进轨道铺底，长度拉到 ${total.toFixed(0)} 秒`,
+    `3. 顶部菜单「文本」→「本地字幕」→ 导入本文件夹的「字幕.srt」`,
+    `4. 在右侧字幕列表里全选所有字幕（点第一条，Shift 点最后一条）`,
+    `5. 点「数字人」→ 选形象、选音色 → 数字人会按字幕时间轴自动口播`,
+    `6. 检查一遍字幕换行和数字人位置，导出即可`,
+    ``,
+    `提示：口播文稿.txt 是完整文案，临时改词可以直接从里面复制。`,
+    ``,
+  ].join('\n');
+  fs.writeFileSync(path.join(dir, '剪映操作指引.txt'), '﻿' + guide);
+
+  res.json({ ok: true, dir, files: fs.readdirSync(dir).sort(), hasBg: !!bgFile, duration: total });
+});
+
+// 在访达中打开导出目录（仅限 exports 目录之内，防越权）
+app.post('/api/open-export', (req, res) => {
+  const dir = path.resolve(String(req.body?.dir || ''));
+  const base = path.resolve(EXPORTS_DIR);
+  if (!dir.startsWith(base + path.sep) || !fs.existsSync(dir)) {
+    return res.status(400).json({ error: '目录不存在或不允许打开' });
+  }
+  spawn('open', [dir], { detached: true, stdio: 'ignore' }).unref();
   res.json({ ok: true });
 });
 

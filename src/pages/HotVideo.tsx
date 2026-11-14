@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import {
-  AudioLines, Copy, Download, FileText, FilePlus2, Film, Loader2,
-  Plus, Save, Trash2, Upload, Wand2,
+  AudioLines, Clapperboard, Copy, Download, FileText, FilePlus2, Film, FolderOpen,
+  Loader2, Plus, Save, Trash2, Upload, Wand2,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -15,8 +15,10 @@ import {
 } from '@/components/ui/alert-dialog'
 import {
   buildScriptTxt, buildSrt, createScript, deleteScript, downloadText,
-  getScript, listMaterials, listScripts, saveScript, transcribe,
+  genVideoPackage, getScript, listMaterials, listScripts, openExportFolder,
+  saveScript, transcribe,
 } from '@/lib/api'
+import type { VideoPackage } from '@/lib/api'
 import type { Material, Script, Segment } from '@/types'
 import { cn } from '@/lib/utils'
 
@@ -31,6 +33,8 @@ export default function HotVideo() {
   const [bgMaterials, setBgMaterials] = useState<Material[]>([])
   const [bgId, setBgId] = useState<string>('none')
   const [confirmDel, setConfirmDel] = useState(false)
+  const [packaging, setPackaging] = useState(false)
+  const [pkg, setPkg] = useState<VideoPackage | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
   /* ---------- 数据加载 ---------- */
@@ -61,6 +65,7 @@ export default function HotVideo() {
     setSegments(s.segments.map(x => ({ start: x.start, end: x.end, text: x.text })))
     setBgId(s.bg_material_id ? String(s.bg_material_id) : 'none')
     setDirty(false)
+    setPkg(null)
   }
 
   /* ---------- ① 扒稿 ---------- */
@@ -168,6 +173,32 @@ export default function HotVideo() {
       toast.success('背景素材路径已复制')
     } catch {
       toast.error('复制失败')
+    }
+  }
+
+  /* ---------- ④ 一键剪映视频包 ---------- */
+  const doPackage = async () => {
+    if (!current || packaging) return
+    if (dirty) { toast.warning('有未保存的修改，请先保存文稿再生成'); return }
+    if (!filledCount) { toast.error('还没有任何文字内容'); return }
+    setPackaging(true)
+    try {
+      const p = await genVideoPackage(current.id)
+      setPkg(p)
+      toast.success(`视频包已生成：${p.files.length} 个文件`)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '生成失败')
+    } finally {
+      setPackaging(false)
+    }
+  }
+  const doOpenFolder = async () => {
+    if (!pkg) return
+    try {
+      await openExportFolder(pkg.dir)
+      toast.success('已在访达中打开')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '打开失败')
     }
   }
 
@@ -325,17 +356,47 @@ export default function HotVideo() {
                 {bg.abs_path}
               </code>
             )}
-            <div className="flex flex-wrap gap-2 pt-1">
-              <Button onClick={doExportSrt}>
-                <Download className="w-4 h-4" /> 下载字幕 .srt
-              </Button>
-              <Button variant="outline" onClick={doExportTxt}>
-                <AudioLines className="w-4 h-4" /> 下载口播文稿 .txt
-              </Button>
+            <div className="border-t border-border pt-4 space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <Button onClick={doPackage} disabled={packaging || !filledCount}>
+                  {packaging ? <Loader2 className="w-4 h-4 animate-spin" /> : <Clapperboard className="w-4 h-4" />}
+                  {packaging ? '生成中…' : '生成剪映视频包'}
+                </Button>
+                {pkg && (
+                  <Button variant="outline" onClick={doOpenFolder}>
+                    <FolderOpen className="w-4 h-4" /> 在访达中打开
+                  </Button>
+                )}
+                {dirty && (
+                  <span className="text-xs text-amber-600 dark:text-amber-400">有未保存修改，请先保存文稿再生成</span>
+                )}
+              </div>
+              {pkg && (
+                <div className="rounded-lg border border-primary/25 bg-primary/5 px-4 py-3 space-y-1.5">
+                  <p className="text-xs font-medium">
+                    已生成 {pkg.files.length} 个文件（总时长 {pkg.duration.toFixed(0)}s
+                    {pkg.hasBg ? ' · 含背景素材' : ' · 未选背景'}）
+                  </p>
+                  <ul className="text-xs text-muted-foreground space-y-0.5">
+                    {pkg.files.map(f => <li key={f}>📄 {f}</li>)}
+                  </ul>
+                  <p className="text-xs text-muted-foreground leading-relaxed pt-1">
+                    按文件夹里的「剪映操作指引.txt」操作：背景铺底 → 导入字幕.srt → 全选字幕 → 数字人选形象开念 → 导出成片。
+                  </p>
+                </div>
+              )}
+              <details className="text-xs text-muted-foreground">
+                <summary className="cursor-pointer select-none hover:text-foreground">单独下载文件</summary>
+                <div className="flex flex-wrap gap-2 pt-2">
+                  <Button variant="outline" size="sm" onClick={doExportSrt}>
+                    <Download className="w-3.5 h-3.5" /> 字幕 .srt
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={doExportTxt}>
+                    <AudioLines className="w-3.5 h-3.5" /> 口播文稿 .txt
+                  </Button>
+                </div>
+              </details>
             </div>
-            <p className="text-xs text-muted-foreground leading-relaxed">
-              剪映用法：导入背景素材铺底 → 文本 → 导入字幕（选刚下载的 .srt）→ 全选字幕 → 数字人 → 选形象开念。
-            </p>
           </div>
         </section>
       )}

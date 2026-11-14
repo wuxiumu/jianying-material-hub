@@ -115,6 +115,25 @@ export function saveScript(id: number, data: { title?: string; segments?: { star
 }
 export const deleteScript = (id: number) => req<{ ok: boolean }>(`/scripts/${id}`, { method: 'DELETE' })
 
+/** 一键生成剪映数字人视频包 */
+export interface VideoPackage {
+  ok: boolean
+  dir: string
+  files: string[]
+  hasBg: boolean
+  duration: number
+}
+export const genVideoPackage = (id: number) =>
+  req<VideoPackage>(`/scripts/${id}/video-package`, { method: 'POST' })
+
+/** 在访达中打开导出目录 */
+export const openExportFolder = (dir: string) =>
+  req<{ ok: boolean }>('/open-export', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dir }),
+  })
+
 /** 上传视频/音频转写为文稿（耗时较长，无进度） */
 export async function transcribe(file: File): Promise<Script> {
   const fd = new FormData()
