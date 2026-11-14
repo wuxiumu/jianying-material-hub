@@ -4,10 +4,10 @@ import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { FFMPEG, FFPROBE } from './bin.js';
 
 const WHISPER = '/opt/homebrew/bin/whisper-cli';
 const MODEL = '/Users/m6mini/Documents/kimi/models/ggml-small.bin';
-const FFMPEG = 'ffmpeg';
 
 function run(cmd, args, timeout = 600000) {
   return new Promise((resolve, reject) => {
@@ -33,7 +33,7 @@ export async function transcribeFile(inputPath) {
     // 2) 时长
     let duration = 0;
     try {
-      const d = await run('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', wav]);
+      const d = await run(FFPROBE, ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', wav]);
       duration = Math.round(parseFloat(d.trim()) * 10) / 10 || 0;
     } catch { /* 尽力而为 */ }
     // 3) whisper 转写（-ml 20 控制分段长度，中文约一句一段）

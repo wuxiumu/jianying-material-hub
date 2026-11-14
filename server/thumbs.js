@@ -3,6 +3,7 @@ import { execFile } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
 import { THUMB_DIR } from './db.js';
+import { FFMPEG, FFPROBE, SIPS } from './bin.js';
 
 function run(cmd, args, timeout = 30000) {
   return new Promise((resolve, reject) => {
@@ -19,10 +20,10 @@ export async function makeThumb(type, absFilePath, materialId) {
   try {
     if (type === 'image') {
       // sips：等比缩到最长边 640，转 jpeg
-      await run('sips', ['-Z', '640', '-s', 'format', 'jpeg', '-s', 'formatOptions', '80', absFilePath, '--out', out]);
+      await run(SIPS, ['-Z', '640', '-s', 'format', 'jpeg', '-s', 'formatOptions', '80', absFilePath, '--out', out]);
     } else if (type === 'video') {
       // ffmpeg：第 1 秒抽帧，宽 640
-      await run('ffmpeg', ['-y', '-ss', '1', '-i', absFilePath, '-frames:v', '1', '-vf', 'scale=640:-2', '-q:v', '3', out]);
+      await run(FFMPEG, ['-y', '-ss', '1', '-i', absFilePath, '-frames:v', '1', '-vf', 'scale=640:-2', '-q:v', '3', out]);
     } else {
       return null; // 音频不生成缩略图，前端用图标
     }
@@ -38,30 +39,23 @@ export async function probeMedia(type, absFilePath) {
   const meta = {};
   try {
     if (type === 'image') {
-      const w = await run('sips', ['-g', 'pixelWidth', absFilePath]);
-      const h = await run('sips', ['-g', 'pixelHeight', absFilePath]);
+      const w = await run(SIPS, ['-g', 'pixelWidth', absFilePath]);
+      const h = await run(SIPS, ['-g', 'pixelHeight', absFilePath]);
       meta.width = Number(w.match(/pixelWidth:\s*(\d+)/)?.[1]) || null;
       meta.height = Number(h.match(/pixelHeight:\s*(\d+)/)?.[1]) || null;
     } else if (type === 'video' || type === 'audio') {
-      const bin = (await which('ffprobe')) || 'ffprobe';
-      const out = await run(bin, ['-v', 'error', '-select_streams', 'v:0',
+      const out = await run(FFPROBE, ['-v', 'error', '-select_streams', 'v:0',
         '-show_entries', 'stream=width,height', '-of', 'csv=p=0', absFilePath]).catch(() => '');
       const [w, h] = out.trim().split(',').map(Number);
       if (w) meta.width = w;
       if (h) meta.height = h;
-      const dur = await run(bin, ['-v', 'error', '-show_entries', 'format=duration',
+      const dur = await run(FFPROBE, ['-v', 'error', '-show_entries', 'format=duration',
         '-of', 'default=noprint_wrappers=1:nokey=1', absFilePath]).catch(() => '');
       const d = parseFloat(dur.trim());
       if (d > 0) meta.duration = Math.round(d * 10) / 10;
     }
   } catch { /* 元数据失败不阻断入库 */ }
   return meta;
-}
-
-function which(cmd) {
-  return new Promise(resolve => {
-    execFile('which', [cmd], (err, stdout) => resolve(err ? null : stdout.trim()));
-  });
 }
 
 export function deleteThumb(materialId) {
