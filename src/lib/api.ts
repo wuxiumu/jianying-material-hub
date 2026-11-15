@@ -13,6 +13,7 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
 
 export interface ListParams {
   type?: MaterialType | ''
+  origin?: 'user' | 'hot' | ''
   category_id?: number | ''
   tag_ids?: number[]
   q?: string
@@ -23,6 +24,7 @@ export interface ListParams {
 export function listMaterials(p: ListParams) {
   const qs = new URLSearchParams()
   if (p.type) qs.set('type', p.type)
+  if (p.origin) qs.set('origin', p.origin)
   if (p.category_id) qs.set('category_id', String(p.category_id))
   if (p.tag_ids?.length) qs.set('tag_ids', p.tag_ids.join(','))
   if (p.q) qs.set('q', p.q)
@@ -30,6 +32,8 @@ export function listMaterials(p: ListParams) {
   qs.set('page_size', String(p.page_size ?? 24))
   return req<MaterialListResp>(`/materials?${qs}`)
 }
+
+export const getMaterial = (id: number) => req<Material>(`/materials/${id}`)
 
 export function updateMaterial(id: number, data: Partial<Pick<Material, 'name' | 'category_id' | 'note' | 'source'>> & { tags?: string[] }) {
   return req<Material>(`/materials/${id}`, {
@@ -46,7 +50,7 @@ export function deleteMaterial(id: number) {
 /** 带进度回调的上传（XHR），onProgress 收 0-100 */
 export function uploadMaterials(
   files: File[],
-  opts: { categoryId?: number | ''; tags?: string },
+  opts: { categoryId?: number | ''; tags?: string; origin?: 'user' | 'hot' },
   onProgress: (pct: number) => void,
 ): Promise<{ items: Material[]; errors: { name: string; error: string }[] }> {
   return new Promise((resolve, reject) => {
@@ -54,6 +58,7 @@ export function uploadMaterials(
     files.forEach(f => fd.append('files', f))
     if (opts.categoryId) fd.append('category_id', String(opts.categoryId))
     if (opts.tags) fd.append('tags', opts.tags)
+    if (opts.origin) fd.append('origin', opts.origin)
     const xhr = new XMLHttpRequest()
     xhr.open('POST', `${BASE}/materials/upload`)
     xhr.upload.onprogress = (e) => {
@@ -146,13 +151,13 @@ export async function transcribe(file: File): Promise<Script> {
 
 /* ---------- 爆款复刻：原素材加工 ---------- */
 
-/** 视频 → 提取音频素材（幂等） */
-export const extractAudio = (id: number) =>
-  req<Material>(`/materials/${id}/extract-audio`, { method: 'POST' })
+/** 视频 → 提取音频素材（默认幂等；force 强制删除旧音频重新提取） */
+export const extractAudio = (id: number, force = false) =>
+  req<Material>(`/materials/${id}/extract-audio${force ? '?force=1' : ''}`, { method: 'POST' })
 
-/** 原素材 → 转写为文稿（纯文字 + 时间轴，幂等） */
-export const transcribeMaterial = (id: number) =>
-  req<Script>(`/materials/${id}/transcribe`, { method: 'POST' })
+/** 原素材 → 转写为文稿（默认幂等；force 强制删除旧文稿重新转写） */
+export const transcribeMaterial = (id: number, force = false) =>
+  req<Script>(`/materials/${id}/transcribe${force ? '?force=1' : ''}`, { method: 'POST' })
 
 /** 原素材的衍生物（音频 + 文稿） */
 export interface Derivatives {

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router'
 import { toast } from 'sonner'
 import {
   AudioLines, Clapperboard, Clock, Copy, Download, FileAudio, FileText, FilePlus2, Film,
@@ -15,8 +16,8 @@ import {
 } from '@/components/ui/alert-dialog'
 import {
   buildScriptTxt, buildSrt, createScript, deleteScript, downloadText, extractAudio,
-  formatDuration, formatSize, genVideoPackage, getDerivatives, getScript, listMaterials,
-  listScripts, openExportFolder, saveScript, transcribeMaterial, uploadMaterials,
+  formatDuration, formatSize, genVideoPackage, getDerivatives, getMaterial, getScript,
+  listMaterials, listScripts, openExportFolder, saveScript, transcribeMaterial, uploadMaterials,
 } from '@/lib/api'
 import type { Derivatives, VideoPackage } from '@/lib/api'
 import type { Material, Script, Segment } from '@/types'
@@ -43,6 +44,8 @@ export default function HotVideo() {
   const [extracting, setExtracting] = useState(false)
   const [transcribingSrc, setTranscribingSrc] = useState(false)
   const [transcript, setTranscript] = useState<{ scriptId: number; text: string } | null>(null)
+  const [confirmRegen, setConfirmRegen] = useState<null | 'audio' | 'text' | 'timeline'>(null)
+  const [searchParams, setSearchParams] = useSearchParams()
 
   /* ---------- 数据加载 ---------- */
   const loadScripts = useCallback(async (keepId?: number) => {
@@ -61,8 +64,8 @@ export default function HotVideo() {
   const loadSources = useCallback(async (selectId?: number) => {
     try {
       const [v, a] = await Promise.all([
-        listMaterials({ type: 'video', page_size: 100 }),
-        listMaterials({ type: 'audio', page_size: 100 }),
+        listMaterials({ type: 'video', origin: 'hot', page_size: 100 }),
+        listMaterials({ type: 'audio', origin: 'hot', page_size: 100 }),
       ])
       const all = [...v.items, ...a.items]
         .filter(m => !m.derived_from)
@@ -71,6 +74,15 @@ export default function HotVideo() {
       if (selectId && all.some(m => m.id === selectId)) setSrcId(selectId)
     } catch { /* 原素材列表失败不阻断 */ }
   }, [])
+
+  /* 从素材库跳转：/hot?src=ID 预选原素材 */
+  useEffect(() => {
+    const from = Number(searchParams.get('src'))
+    if (from) {
+      setSrcId(from)
+      setSearchParams({}, { replace: true })
+    }
+  }, [searchParams, setSearchParams])
 
   const refreshBg = useCallback(() => {
     Promise.all([listMaterials({ type: 'video', page_size: 100 }), listMaterials({ type: 'image', page_size: 100 })])
@@ -84,7 +96,7 @@ export default function HotVideo() {
     refreshBg()
   }, [loadScripts, loadSources, refreshBg])
 
-  /* 选中原素材 → 加载衍生物（音频/文稿） */
+  /* 选中原素材 → 加载衍生物（音频/文稿）；不在爆款列表的补拉详情 */
   useEffect(() => {
     setDeriv(null)
     setTranscript(null)
@@ -95,6 +107,14 @@ export default function HotVideo() {
       if (sc?.transcript_text) setTranscript({ scriptId: sc.id, text: sc.transcript_text })
     }).catch(() => { /* 忽略 */ })
   }, [srcId])
+
+  useEffect(() => {
+    if (srcId && !sources.some(m => m.id === srcId)) {
+      getMaterial(srcId)
+        .then(m => setSources(prev => (prev.some(x => x.id === m.id) ? prev : [m, ...prev])))
+        .catch(() => toast.error('原素材不存在或已删除'))
+    }
+  }, [srcId, sources])
 
   const applyScript = (s: Script) => {
     setCurrent(s)
@@ -110,10 +130,10 @@ export default function HotVideo() {
     if (!files.length || uploadPct !== null) return
     setUploadPct(0)
     try {
-      const { items, errors } = await uploadMaterials(files, {}, setUploadPct)
+      const { items, errors } = await uploadMaterials(files, { origin: 'hot' }, setUploadPct)
       for (const e of errors) toast.error(`${e.name}：${e.error}`)
       if (items.length) {
-        toast.success(`已入库 ${items.length} 个原素材，点击可查看详情`)
+        toast.success(`已入库 ${items.length} 个爆款素材，点击可查看详情`)
         await loadSources(items[0].id)
         refreshBg()
       }
@@ -126,20 +146,21 @@ export default function HotVideo() {
 
   const src = sources.find(m => m.id === srcId) || null
 
-  /** 确保原素材已转写：有文稿直接取，没有则跑 whisper（一次产出纯文字+时间稿） */
-  const ensureScript = async (): Promise<Script | null> => {
-    if (!src) return null
+  /** 转写：force 时删除旧文稿重跑 whisper；否则有文稿直接取 */
+  const runTranscribe = async (force: boolean): Promise<Script | null> => {
+    if (!src || transcribingSrc) return null
     const existed = deriv?.scripts?.[0]
-    if (existed) return getScript(existed.id)
-    if (transcribingSrc) return null
+    if (existed && !force) return getScript(existed.id)
     setTranscribingSrc(true)
     try {
       toast.info('本机 whisper 转写中，1 分钟音频约需 5-10 秒…')
-      const s = await transcribeMaterial(src.id)
-      toast.success(`转写完成：${s.segments.length} 段 · ${s.duration}s`)
+      const s = await transcribeMaterial(src.id, force)
+      toast.success(`${force ? '已重新' : ''}转写完成：${s.segments.length} 段 · ${s.duration}s`)
       const d = await getDerivatives(src.id).catch(() => null)
       if (d) setDeriv(d)
       loadScripts()
+      // 强制重跑会删掉旧文稿：若编辑器正开着它，同步换成新文稿
+      if (force && current && current.material_id === src.id) applyScript(s)
       return s
     } catch (e) {
       toast.error(e instanceof Error ? e.message : '转写失败')
@@ -149,12 +170,12 @@ export default function HotVideo() {
     }
   }
 
-  const doExtractAudio = async () => {
+  const runExtractAudio = async (force: boolean) => {
     if (!src || extracting) return
     setExtracting(true)
     try {
-      const a = await extractAudio(src.id)
-      toast.success(`音频已入库：${a.name}`)
+      const a = await extractAudio(src.id, force)
+      toast.success(`${force ? '已重新提取' : '音频已入库'}：${a.name}`)
       const d = await getDerivatives(src.id).catch(() => null)
       if (d) setDeriv(d)
     } catch (e) {
@@ -164,17 +185,41 @@ export default function HotVideo() {
     }
   }
 
-  const doShowText = async () => {
-    const s = await ensureScript()
-    if (s) setTranscript({ scriptId: s.id, text: s.transcript_text || s.segments.map(x => x.text).join('\n') })
+  const showTranscript = (s: Script) =>
+    setTranscript({ scriptId: s.id, text: s.transcript_text || s.segments.map(x => x.text).join('\n') })
+
+  /** 三个加工按钮的统一入口：已生成过先弹确认（预览 / 强制重新生成） */
+  const handleAction = (kind: 'audio' | 'text' | 'timeline') => {
+    if (!src) return
+    if (kind === 'audio') {
+      if (deriv?.audios.length) return setConfirmRegen('audio')
+      void runExtractAudio(false)
+      return
+    }
+    if (deriv?.scripts.length) return setConfirmRegen(kind)
+    void (async () => {
+      const s = await runTranscribe(false)
+      if (s) kind === 'text' ? showTranscript(s) : (applyScript(s), toast.success('时间文字稿已载入下方时间轴'))
+    })()
   }
 
-  const doOpenTimeline = async () => {
-    const s = await ensureScript()
-    if (s) {
-      applyScript(s)
-      toast.success('时间文字稿已载入下方时间轴')
+  /** 确认弹窗的选择：预览已有 或 强制重新生成 */
+  const resolveRegen = async (regen: boolean) => {
+    const kind = confirmRegen
+    setConfirmRegen(null)
+    if (!kind || !src) return
+    if (kind === 'audio') {
+      if (regen) await runExtractAudio(true)
+      return // 预览已有：音频播放器本就在详情里
     }
+    const existed = deriv?.scripts?.[0]
+    if (!regen && existed) {
+      const s = await getScript(existed.id).catch(() => null)
+      if (s) kind === 'text' ? showTranscript(s) : applyScript(s)
+      return
+    }
+    const s = await runTranscribe(true)
+    if (s) kind === 'text' ? showTranscript(s) : (applyScript(s), toast.success('新时间文字稿已载入下方时间轴'))
   }
 
   const doCreate = async () => {
@@ -414,18 +459,18 @@ export default function HotVideo() {
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   {src.type === 'video' && (
-                    <Button size="sm" variant="outline" onClick={doExtractAudio} disabled={extracting}>
+                    <Button size="sm" variant="outline" onClick={() => handleAction('audio')} disabled={extracting}>
                       {extracting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileAudio className="w-3.5 h-3.5" />}
-                      {deriv?.audios.length ? '音频已提取（再看）' : '转音频'}
+                      {deriv?.audios.length ? '转音频（已有）' : '转音频'}
                     </Button>
                   )}
-                  <Button size="sm" variant="outline" onClick={doShowText} disabled={transcribingSrc}>
+                  <Button size="sm" variant="outline" onClick={() => handleAction('text')} disabled={transcribingSrc}>
                     {transcribingSrc ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileText className="w-3.5 h-3.5" />}
-                    {transcribingSrc ? '转写中…' : '转文字'}
+                    {transcribingSrc ? '转写中…' : deriv?.scripts.length ? '转文字（已有）' : '转文字'}
                   </Button>
-                  <Button size="sm" onClick={doOpenTimeline} disabled={transcribingSrc}>
+                  <Button size="sm" onClick={() => handleAction('timeline')} disabled={transcribingSrc}>
                     {transcribingSrc ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Clock className="w-3.5 h-3.5" />}
-                    转时间文字稿
+                    {deriv?.scripts.length ? '转时间文字稿（已有）' : '转时间文字稿'}
                   </Button>
                 </div>
                 {deriv?.audios.map(a => (
@@ -619,6 +664,31 @@ export default function HotVideo() {
             <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction onClick={doDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
               确认删除
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* 二次加工确认：已有产物 → 预览 / 强制重新生成 */}
+      <AlertDialog open={!!confirmRegen} onOpenChange={open => { if (!open) setConfirmRegen(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {confirmRegen === 'audio' ? '音频已生成过' : '文字稿已生成过'}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {confirmRegen === 'audio'
+                ? '这个视频已经提取过音频，详情里可直接试听。要删除旧音频强制重新提取吗？'
+                : '这个素材已经转写过文字稿。直接查看已有结果，还是删除旧稿（含你在时间轴里的修改）强制重新转写？'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction onClick={() => resolveRegen(false)} className="bg-secondary text-foreground hover:bg-secondary/80">
+              {confirmRegen === 'audio' ? '预览已有' : '查看已有'}
+            </AlertDialogAction>
+            <AlertDialogAction onClick={() => resolveRegen(true)}>
+              强制重新生成
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

@@ -73,12 +73,13 @@ app.get('/api/stats', (req, res) => {
 
 /* ---------------- 素材 ---------------- */
 app.get('/api/materials', (req, res) => {
-  const { type, category_id, q, tag_ids } = req.query;
+  const { type, category_id, q, tag_ids, origin } = req.query;
   const page = Math.max(1, parseInt(req.query.page) || 1);
   const pageSize = Math.min(100, Math.max(1, parseInt(req.query.page_size) || 24));
   const where = [];
   const params = [];
   if (type && ['video', 'image', 'audio'].includes(type)) { where.push(`m.type = ?`); params.push(type); }
+  if (origin && ['user', 'hot'].includes(origin)) { where.push(`m.origin = ?`); params.push(origin); }
   if (category_id) { where.push(`m.category_id = ?`); params.push(Number(category_id)); }
   if (q) { where.push(`(m.name LIKE ? OR m.note LIKE ? OR m.source LIKE ?)`); params.push(`%${q}%`, `%${q}%`, `%${q}%`); }
   const tagIds = String(tag_ids || '').split(',').map(Number).filter(Boolean);
@@ -89,7 +90,10 @@ app.get('/api/materials', (req, res) => {
   const cond = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const total = db.prepare(`SELECT COUNT(*) n FROM materials m ${cond}`).get(...params).n;
   const rows = db.prepare(`
-    SELECT m.* FROM materials m ${cond}
+    SELECT m.*,
+      (SELECT COUNT(*) FROM materials a WHERE a.derived_from = m.id AND a.type = 'audio') audio_count,
+      (SELECT COUNT(*) FROM scripts s WHERE s.material_id = m.id) script_count
+    FROM materials m ${cond}
     ORDER BY m.created_at DESC, m.id DESC
     LIMIT ? OFFSET ?
   `).all(...params, pageSize, (page - 1) * pageSize);
@@ -104,6 +108,7 @@ app.get('/api/materials/:id', (req, res) => {
 
 app.post('/api/materials/upload', upload.array('files', 20), async (req, res) => {
   const categoryId = req.body.category_id ? Number(req.body.category_id) : null;
+  const origin = req.body.origin === 'hot' ? 'hot' : 'user';
   const results = [];
   const errors = [];
   for (const f of req.files || []) {
@@ -122,9 +127,9 @@ app.post('/api/materials/upload', upload.array('files', 20), async (req, res) =>
     // 入库
     const name = origName.replace(/\.[^.]+$/, '');
     const info = db.prepare(`
-      INSERT INTO materials (name, type, path, size, category_id)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(name, type, rel, f.size, categoryId);
+      INSERT INTO materials (name, type, path, size, category_id, origin)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(name, type, rel, f.size, categoryId, origin);
     const id = Number(info.lastInsertRowid);
     // 元数据 + 缩略图（异步尽力而为）
     const meta = await probeMedia(type, abs);
@@ -174,14 +179,20 @@ const runCmd = (cmd, args, timeout = 600000) => new Promise((resolve, reject) =>
   });
 });
 
-// 视频 → 音频素材（幂等：已提取过直接返回已有记录）
+// 视频 → 音频素材（默认幂等；?force=1 删除旧音频强制重新提取）
 app.post('/api/materials/:id/extract-audio', async (req, res) => {
   const id = Number(req.params.id);
+  const force = req.query.force === '1' || req.body?.force === true;
   const row = db.prepare(`SELECT * FROM materials WHERE id = ?`).get(id);
   if (!row) return res.status(404).json({ error: '素材不存在' });
   if (row.type !== 'video') return res.status(400).json({ error: '只有视频素材需要提取音频' });
   const existing = db.prepare(`SELECT * FROM materials WHERE derived_from = ? AND type = 'audio'`).get(id);
-  if (existing) return res.json(row2json(existing));
+  if (existing && !force) return res.json(row2json(existing));
+  if (existing && force) {
+    const oldAbs = path.join(DATA_DIR, existing.path);
+    db.prepare(`DELETE FROM materials WHERE id = ?`).run(existing.id);
+    if (fs.existsSync(oldAbs)) fs.unlinkSync(oldAbs);
+  }
   const abs = path.join(DATA_DIR, row.path);
   if (!fs.existsSync(abs)) return res.status(400).json({ error: '源文件已丢失' });
   const fname = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}.mp3`;
@@ -200,14 +211,18 @@ app.post('/api/materials/:id/extract-audio', async (req, res) => {
   }
 });
 
-// 原素材 → 转写（一次转写同时产出纯文字稿 + 带时间戳时间稿，幂等）
+// 原素材 → 转写（默认幂等；?force=1 删除旧文稿强制重新转写，时间段级联删除）
 app.post('/api/materials/:id/transcribe', async (req, res) => {
   const id = Number(req.params.id);
+  const force = req.query.force === '1' || req.body?.force === true;
   const row = db.prepare(`SELECT * FROM materials WHERE id = ?`).get(id);
   if (!row) return res.status(404).json({ error: '素材不存在' });
   if (row.type !== 'video' && row.type !== 'audio') return res.status(400).json({ error: '只支持视频或音频素材' });
   const existing = db.prepare(`SELECT * FROM scripts WHERE material_id = ?`).get(id);
-  if (existing) return res.json(script2json(existing));
+  if (existing && !force) return res.json(script2json(existing));
+  if (existing && force) {
+    db.prepare(`DELETE FROM scripts WHERE material_id = ?`).run(id);
+  }
   const abs = path.join(DATA_DIR, row.path);
   if (!fs.existsSync(abs)) return res.status(400).json({ error: '源文件已丢失' });
   try {

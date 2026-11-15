@@ -22,9 +22,10 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import {
-  deleteMaterial, formatDuration, formatSize, getStats, listCategories,
+  deleteMaterial, formatDuration, formatSize, getDerivatives, getStats, listCategories,
   listMaterials, listTags, updateMaterial, uploadMaterials,
 } from '@/lib/api'
+import type { Derivatives } from '@/lib/api'
 import type { Category, Material, MaterialType, Stats, Tag } from '@/types'
 import { cn } from '@/lib/utils'
 
@@ -46,6 +47,7 @@ export default function Library() {
   const [categories, setCategories] = useState<Category[]>([])
   const [allTags, setAllTags] = useState<Tag[]>([])
   const [type, setType] = useState<MaterialType | ''>('')
+  const [origin, setOrigin] = useState<'user' | 'hot'>('user')
   const [categoryId, setCategoryId] = useState<number | ''>('')
   const [tagIds, setTagIds] = useState<number[]>([])
   const [q, setQ] = useState('')
@@ -63,7 +65,7 @@ export default function Library() {
     setLoading(true)
     try {
       const data = await listMaterials({
-        type, category_id: categoryId, tag_ids: tagIds, q: qDebounced, page: p, page_size: PAGE_SIZE,
+        type, origin, category_id: categoryId, tag_ids: tagIds, q: qDebounced, page: p, page_size: PAGE_SIZE,
       })
       setItems(prev => (append ? [...prev, ...data.items] : data.items))
       setTotal(data.total)
@@ -73,7 +75,7 @@ export default function Library() {
     } finally {
       setLoading(false)
     }
-  }, [type, categoryId, tagIds, qDebounced])
+  }, [type, origin, categoryId, tagIds, qDebounced])
 
   const loadMeta = useCallback(async () => {
     try {
@@ -117,6 +119,29 @@ export default function Library() {
 
       {/* 筛选栏 */}
       <div className="px-6 py-4 border-b border-border space-y-3">
+        {/* 库分区：我的素材 / 爆款素材 */}
+        <div className="flex items-center gap-2">
+          {([['user', '我的素材'], ['hot', '爆款素材']] as const).map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setOrigin(key)}
+              className={cn(
+                'px-4 h-9 rounded-lg text-sm font-medium transition-colors border',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                origin === key
+                  ? 'bg-primary/10 text-primary border-primary/40'
+                  : 'text-muted-foreground border-border hover:text-foreground hover:border-primary/30',
+              )}
+            >
+              {label}
+            </button>
+          ))}
+          {origin === 'hot' && (
+            <span className="text-xs text-muted-foreground">
+              来自「爆款复刻」上传的原视频/音频，点卡片可查看加工状态
+            </span>
+          )}
+        </div>
         <div className="flex flex-wrap items-center gap-3">
           <Tabs value={type || 'all'} onValueChange={v => setType(v === 'all' ? '' : (v as MaterialType))}>
             <TabsList>
@@ -376,6 +401,19 @@ function MaterialCard({ m, onOpen }: { m: Material; onOpen: () => void }) {
           <span className="text-[10px] text-muted-foreground">{formatSize(m.size)}</span>
           <span className="text-[10px] text-muted-foreground">{m.created_at.slice(0, 10)}</span>
         </div>
+        {m.origin === 'hot' && (
+          <div className="flex items-center gap-1 mt-1.5">
+            {(m.audio_count ?? 0) > 0 && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-amber-500/15 text-amber-400">🎵 已转音频</span>
+            )}
+            {(m.script_count ?? 0) > 0 && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-primary/15 text-primary">📝 已转文字稿</span>
+            )}
+            {!(m.audio_count ?? 0) && !(m.script_count ?? 0) && (
+              <span className="text-[10px] text-muted-foreground">待加工</span>
+            )}
+          </div>
+        )}
       </div>
     </button>
   )
@@ -420,6 +458,7 @@ function DetailDialog({ material, categories, onClose, onChanged }: {
   const [saving, setSaving] = useState(false)
   const [confirmDel, setConfirmDel] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [hotDeriv, setHotDeriv] = useState<Derivatives | null>(null)
 
   useEffect(() => {
     if (material) {
@@ -429,6 +468,10 @@ function DetailDialog({ material, categories, onClose, onChanged }: {
       setNote(material.note || '')
       setTags(material.tags.map(t => t.name).join(', '))
       setCopied(false)
+      setHotDeriv(null)
+      if (material.origin === 'hot') {
+        getDerivatives(material.id).then(setHotDeriv).catch(() => { /* 忽略 */ })
+      }
     }
   }, [material])
 
@@ -512,6 +555,29 @@ function DetailDialog({ material, categories, onClose, onChanged }: {
                   </div>
                 )}
               </div>
+
+              {/* 爆款素材：加工状态 + 去复刻 */}
+              {material.origin === 'hot' && (
+                <div className="rounded-xl border border-primary/25 bg-primary/5 px-4 py-3 space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-xs font-medium">爆款素材 · 加工状态</p>
+                    <a
+                      href={`/hot?src=${material.id}`}
+                      className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-colors"
+                    >
+                      <Clapperboard className="w-3.5 h-3.5" /> 在爆款复刻中打开
+                    </a>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5 text-[11px]">
+                    {hotDeriv?.audios.length
+                      ? <span className="px-1.5 py-0.5 rounded-md bg-amber-500/15 text-amber-400">🎵 已转音频：{hotDeriv.audios[0].name}</span>
+                      : <span className="px-1.5 py-0.5 rounded-md bg-secondary text-muted-foreground">🎵 未转音频</span>}
+                    {hotDeriv?.scripts.length
+                      ? <span className="px-1.5 py-0.5 rounded-md bg-primary/15 text-primary">📝 已转文字稿：{hotDeriv.scripts[0].segment_count} 段</span>
+                      : <span className="px-1.5 py-0.5 rounded-md bg-secondary text-muted-foreground">📝 未转文字稿</span>}
+                  </div>
+                </div>
+              )}
 
               {/* 编辑表单 */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">

@@ -24,6 +24,9 @@ export interface Material {
   note: string
   tags: Tag[]
   derived_from?: number | null
+  origin?: 'user' | 'hot'
+  audio_count?: number
+  script_count?: number
   created_at: string
   updated_at: string
 }
