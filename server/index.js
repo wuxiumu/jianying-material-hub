@@ -12,6 +12,10 @@ import { transcribeFile } from './transcribe.js';
 import { FFMPEG } from './bin.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// 可选：读取项目根目录 .env（Node 20.6+ 原生支持，不存在则跳过）
+try { process.loadEnvFile(path.join(__dirname, '..', '.env')); } catch { /* 无 .env */ }
+
 const app = express();
 app.use(express.json());
 

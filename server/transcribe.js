@@ -6,8 +6,9 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { FFMPEG, FFPROBE } from './bin.js';
 
-const WHISPER = '/opt/homebrew/bin/whisper-cli';
-const MODEL = '/Users/m6mini/Documents/kimi/models/ggml-small.bin';
+// 可用环境变量覆盖（Linux 部署时用 .env 或 systemd Environment 配置）
+const WHISPER = process.env.WHISPER_CLI || '/opt/homebrew/bin/whisper-cli';
+const MODEL = process.env.WHISPER_MODEL || '/Users/m6mini/Documents/kimi/models/ggml-small.bin';
 
 function run(cmd, args, timeout = 600000) {
   return new Promise((resolve, reject) => {
