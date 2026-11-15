@@ -144,6 +144,23 @@ export async function transcribe(file: File): Promise<Script> {
   return body as Script
 }
 
+/* ---------- 爆款复刻：原素材加工 ---------- */
+
+/** 视频 → 提取音频素材（幂等） */
+export const extractAudio = (id: number) =>
+  req<Material>(`/materials/${id}/extract-audio`, { method: 'POST' })
+
+/** 原素材 → 转写为文稿（纯文字 + 时间轴，幂等） */
+export const transcribeMaterial = (id: number) =>
+  req<Script>(`/materials/${id}/transcribe`, { method: 'POST' })
+
+/** 原素材的衍生物（音频 + 文稿） */
+export interface Derivatives {
+  audios: Material[]
+  scripts: Script[]
+}
+export const getDerivatives = (id: number) => req<Derivatives>(`/materials/${id}/derivatives`)
+
 /* ---------- 导出工具 ---------- */
 export function srtTime(sec: number): string {
   const ms = Math.round(sec * 1000)

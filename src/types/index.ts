@@ -23,6 +23,7 @@ export interface Material {
   source: string
   note: string
   tags: Tag[]
+  derived_from?: number | null
   created_at: string
   updated_at: string
 }
@@ -65,6 +66,8 @@ export interface Script {
   source_name: string
   duration: number
   bg_material_id: number | null
+  material_id?: number | null
+  transcript_text?: string | null
   segment_count?: number
   segments: Segment[]
   created_at?: string

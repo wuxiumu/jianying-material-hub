@@ -83,6 +83,14 @@ CREATE TABLE IF NOT EXISTS segments (
 CREATE INDEX IF NOT EXISTS idx_segments_script ON segments(script_id, ord);
 `);
 
+// 轻量迁移：老库补列（已存在则忽略报错）
+const addCol = (table, col, ddl) => {
+  try { db.prepare(`ALTER TABLE ${table} ADD COLUMN ${col} ${ddl}`).run(); } catch { /* 已存在 */ }
+};
+addCol('materials', 'derived_from', 'INTEGER REFERENCES materials(id) ON DELETE SET NULL'); // 派生来源（如视频提取出的音频）
+addCol('scripts', 'material_id', 'INTEGER REFERENCES materials(id) ON DELETE SET NULL');    // 文稿关联的原素材
+addCol('scripts', 'transcript_text', 'TEXT');                                                // 纯文字稿（无时间戳）
+
 // 默认分类
 const seed = db.prepare(`INSERT OR IGNORE INTO categories (name) VALUES (?)`);
 for (const name of ['口播素材', '产品展示', 'B-Roll 空镜', '音乐音效', '封面图', '未分类']) {

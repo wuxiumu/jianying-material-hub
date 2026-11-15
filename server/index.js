@@ -4,11 +4,12 @@ import multer from 'multer';
 import path from 'node:path';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { db, DATA_DIR, MEDIA_DIR, ROOT, getTagsOf, setTagsOf } from './db.js';
 import { makeThumb, probeMedia, deleteThumb } from './thumbs.js';
 import { transcribeFile } from './transcribe.js';
+import { FFMPEG } from './bin.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -163,6 +164,80 @@ app.delete('/api/materials/:id', (req, res) => {
   if (fs.existsSync(abs)) fs.unlinkSync(abs);
   deleteThumb(id);
   res.json({ ok: true });
+});
+
+/* ---------------- 爆款复刻：原素材加工（转音频 / 转写） ---------------- */
+const runCmd = (cmd, args, timeout = 600000) => new Promise((resolve, reject) => {
+  execFile(cmd, args, { timeout, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
+    if (err) reject(new Error(stderr?.slice(-300) || err.message));
+    else resolve(stdout);
+  });
+});
+
+// 视频 → 音频素材（幂等：已提取过直接返回已有记录）
+app.post('/api/materials/:id/extract-audio', async (req, res) => {
+  const id = Number(req.params.id);
+  const row = db.prepare(`SELECT * FROM materials WHERE id = ?`).get(id);
+  if (!row) return res.status(404).json({ error: '素材不存在' });
+  if (row.type !== 'video') return res.status(400).json({ error: '只有视频素材需要提取音频' });
+  const existing = db.prepare(`SELECT * FROM materials WHERE derived_from = ? AND type = 'audio'`).get(id);
+  if (existing) return res.json(row2json(existing));
+  const abs = path.join(DATA_DIR, row.path);
+  if (!fs.existsSync(abs)) return res.status(400).json({ error: '源文件已丢失' });
+  const fname = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}.mp3`;
+  const rel = path.join('media', 'audio', fname);
+  try {
+    await runCmd(FFMPEG, ['-y', '-i', abs, '-vn', '-c:a', 'libmp3lame', '-q:a', '4', path.join(DATA_DIR, rel)], 300000);
+    const size = fs.statSync(path.join(DATA_DIR, rel)).size;
+    const info = db.prepare(`
+      INSERT INTO materials (name, type, path, size, duration, derived_from, source)
+      VALUES (?, 'audio', ?, ?, ?, ?, ?)
+    `).run(`${row.name}（音频）`, rel, size, row.duration ?? null, id, `提取自素材 #${id}`);
+    res.json(row2json(db.prepare(`SELECT * FROM materials WHERE id = ?`).get(Number(info.lastInsertRowid))));
+  } catch (e) {
+    try { fs.unlinkSync(path.join(DATA_DIR, rel)); } catch { /* 忽略 */ }
+    res.status(500).json({ error: `转音频失败：${e.message}` });
+  }
+});
+
+// 原素材 → 转写（一次转写同时产出纯文字稿 + 带时间戳时间稿，幂等）
+app.post('/api/materials/:id/transcribe', async (req, res) => {
+  const id = Number(req.params.id);
+  const row = db.prepare(`SELECT * FROM materials WHERE id = ?`).get(id);
+  if (!row) return res.status(404).json({ error: '素材不存在' });
+  if (row.type !== 'video' && row.type !== 'audio') return res.status(400).json({ error: '只支持视频或音频素材' });
+  const existing = db.prepare(`SELECT * FROM scripts WHERE material_id = ?`).get(id);
+  if (existing) return res.json(script2json(existing));
+  const abs = path.join(DATA_DIR, row.path);
+  if (!fs.existsSync(abs)) return res.status(400).json({ error: '源文件已丢失' });
+  try {
+    const { duration, segments } = await transcribeFile(abs);
+    const transcript = segments.map(s => s.text).join('\n');
+    const info = db.prepare(`
+      INSERT INTO scripts (title, source_type, source_name, duration, material_id, transcript_text)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(row.name, row.type, row.name, duration, id, transcript);
+    const scriptId = Number(info.lastInsertRowid);
+    const ins = db.prepare(`INSERT INTO segments (script_id, ord, start, end, text) VALUES (?, ?, ?, ?, ?)`);
+    segments.forEach((s, i) => ins.run(scriptId, i, s.start, s.end, s.text));
+    res.json(script2json(db.prepare(`SELECT * FROM scripts WHERE id = ?`).get(scriptId)));
+  } catch (e) {
+    res.status(500).json({ error: `转写失败：${e.message}` });
+  }
+});
+
+// 原素材的衍生物：提取出的音频 + 关联文稿
+app.get('/api/materials/:id/derivatives', (req, res) => {
+  const id = Number(req.params.id);
+  const row = db.prepare(`SELECT * FROM materials WHERE id = ?`).get(id);
+  if (!row) return res.status(404).json({ error: '素材不存在' });
+  const audios = db.prepare(`SELECT * FROM materials WHERE derived_from = ? AND type = 'audio'`).all(id).map(row2json);
+  const scripts = db.prepare(`
+    SELECT s.*, COUNT(g.id) segment_count FROM scripts s
+    LEFT JOIN segments g ON g.script_id = s.id
+    WHERE s.material_id = ? GROUP BY s.id
+  `).all(id);
+  res.json({ audios, scripts });
 });
 
 /* ---------------- 爆款复刻：文稿与时间轴 ---------------- */

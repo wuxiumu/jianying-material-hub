@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import {
-  AudioLines, Clapperboard, Copy, Download, FileText, FilePlus2, Film, FolderOpen,
-  Loader2, Plus, Save, Trash2, Upload, Wand2,
+  AudioLines, Clapperboard, Clock, Copy, Download, FileAudio, FileText, FilePlus2, Film,
+  FolderOpen, Loader2, Plus, Save, Trash2, Upload, Wand2, X,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -14,11 +14,11 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import {
-  buildScriptTxt, buildSrt, createScript, deleteScript, downloadText,
-  genVideoPackage, getScript, listMaterials, listScripts, openExportFolder,
-  saveScript, transcribe,
+  buildScriptTxt, buildSrt, createScript, deleteScript, downloadText, extractAudio,
+  formatDuration, formatSize, genVideoPackage, getDerivatives, getScript, listMaterials,
+  listScripts, openExportFolder, saveScript, transcribeMaterial, uploadMaterials,
 } from '@/lib/api'
-import type { VideoPackage } from '@/lib/api'
+import type { Derivatives, VideoPackage } from '@/lib/api'
 import type { Material, Script, Segment } from '@/types'
 import { cn } from '@/lib/utils'
 
@@ -29,13 +29,20 @@ export default function HotVideo() {
   const [title, setTitle] = useState('')
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [transcribing, setTranscribing] = useState(false)
   const [bgMaterials, setBgMaterials] = useState<Material[]>([])
   const [bgId, setBgId] = useState<string>('none')
   const [confirmDel, setConfirmDel] = useState(false)
   const [packaging, setPackaging] = useState(false)
   const [pkg, setPkg] = useState<VideoPackage | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  /* ① 原素材 */
+  const [sources, setSources] = useState<Material[]>([])
+  const [srcId, setSrcId] = useState<number | null>(null)
+  const [deriv, setDeriv] = useState<Derivatives | null>(null)
+  const [uploadPct, setUploadPct] = useState<number | null>(null)
+  const [extracting, setExtracting] = useState(false)
+  const [transcribingSrc, setTranscribingSrc] = useState(false)
+  const [transcript, setTranscript] = useState<{ scriptId: number; text: string } | null>(null)
 
   /* ---------- 数据加载 ---------- */
   const loadScripts = useCallback(async (keepId?: number) => {
@@ -51,13 +58,43 @@ export default function HotVideo() {
     }
   }, [])
 
-  useEffect(() => {
-    loadScripts()
-    // 背景候选：素材库里的视频和图片
+  const loadSources = useCallback(async (selectId?: number) => {
+    try {
+      const [v, a] = await Promise.all([
+        listMaterials({ type: 'video', page_size: 100 }),
+        listMaterials({ type: 'audio', page_size: 100 }),
+      ])
+      const all = [...v.items, ...a.items]
+        .filter(m => !m.derived_from)
+        .sort((x, y) => y.id - x.id)
+      setSources(all)
+      if (selectId && all.some(m => m.id === selectId)) setSrcId(selectId)
+    } catch { /* 原素材列表失败不阻断 */ }
+  }, [])
+
+  const refreshBg = useCallback(() => {
     Promise.all([listMaterials({ type: 'video', page_size: 100 }), listMaterials({ type: 'image', page_size: 100 })])
       .then(([v, i]) => setBgMaterials([...v.items, ...i.items]))
       .catch(() => { /* 背景列表失败不阻断 */ })
-  }, [loadScripts])
+  }, [])
+
+  useEffect(() => {
+    loadScripts()
+    loadSources()
+    refreshBg()
+  }, [loadScripts, loadSources, refreshBg])
+
+  /* 选中原素材 → 加载衍生物（音频/文稿） */
+  useEffect(() => {
+    setDeriv(null)
+    setTranscript(null)
+    if (!srcId) return
+    getDerivatives(srcId).then(d => {
+      setDeriv(d)
+      const sc = d.scripts[0]
+      if (sc?.transcript_text) setTranscript({ scriptId: sc.id, text: sc.transcript_text })
+    }).catch(() => { /* 忽略 */ })
+  }, [srcId])
 
   const applyScript = (s: Script) => {
     setCurrent(s)
@@ -68,20 +105,75 @@ export default function HotVideo() {
     setPkg(null)
   }
 
-  /* ---------- ① 扒稿 ---------- */
-  const doTranscribe = async (file: File) => {
-    if (transcribing) return
-    setTranscribing(true)
+  /* ---------- ① 原素材：上传 / 转音频 / 转写 ---------- */
+  const doUploadSrc = async (files: File[]) => {
+    if (!files.length || uploadPct !== null) return
+    setUploadPct(0)
     try {
-      toast.info('正在提取音频并转写，请稍候…')
-      const s = await transcribe(file)
+      const { items, errors } = await uploadMaterials(files, {}, setUploadPct)
+      for (const e of errors) toast.error(`${e.name}：${e.error}`)
+      if (items.length) {
+        toast.success(`已入库 ${items.length} 个原素材，点击可查看详情`)
+        await loadSources(items[0].id)
+        refreshBg()
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '上传失败')
+    } finally {
+      setUploadPct(null)
+    }
+  }
+
+  const src = sources.find(m => m.id === srcId) || null
+
+  /** 确保原素材已转写：有文稿直接取，没有则跑 whisper（一次产出纯文字+时间稿） */
+  const ensureScript = async (): Promise<Script | null> => {
+    if (!src) return null
+    const existed = deriv?.scripts?.[0]
+    if (existed) return getScript(existed.id)
+    if (transcribingSrc) return null
+    setTranscribingSrc(true)
+    try {
+      toast.info('本机 whisper 转写中，1 分钟音频约需 5-10 秒…')
+      const s = await transcribeMaterial(src.id)
       toast.success(`转写完成：${s.segments.length} 段 · ${s.duration}s`)
-      applyScript(s)
+      const d = await getDerivatives(src.id).catch(() => null)
+      if (d) setDeriv(d)
       loadScripts()
+      return s
     } catch (e) {
       toast.error(e instanceof Error ? e.message : '转写失败')
+      return null
     } finally {
-      setTranscribing(false)
+      setTranscribingSrc(false)
+    }
+  }
+
+  const doExtractAudio = async () => {
+    if (!src || extracting) return
+    setExtracting(true)
+    try {
+      const a = await extractAudio(src.id)
+      toast.success(`音频已入库：${a.name}`)
+      const d = await getDerivatives(src.id).catch(() => null)
+      if (d) setDeriv(d)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '转音频失败')
+    } finally {
+      setExtracting(false)
+    }
+  }
+
+  const doShowText = async () => {
+    const s = await ensureScript()
+    if (s) setTranscript({ scriptId: s.id, text: s.transcript_text || s.segments.map(x => x.text).join('\n') })
+  }
+
+  const doOpenTimeline = async () => {
+    const s = await ensureScript()
+    if (s) {
+      applyScript(s)
+      toast.success('时间文字稿已载入下方时间轴')
     }
   }
 
@@ -240,35 +332,145 @@ export default function HotVideo() {
         </div>
       </div>
 
-      {/* ① 扒稿区 */}
+      {/* ① 原素材区 */}
       <section className="rounded-xl border border-border bg-card p-5">
-        <SectionTitle icon={Wand2} title="① 扒稿" desc="上传爆款视频或音频，自动转写成带时间轴的文字稿；没有音频就新建空白文稿自己写" />
+        <SectionTitle icon={Wand2} title="① 原素材" desc="上传爆款视频/音频即入库管理；点选素材看详情，可转音频、转文字、转时间文字稿" />
         <div className="flex flex-wrap items-center gap-3 mt-4">
           <input
             ref={fileRef}
             type="file"
+            multiple
             accept="video/*,audio/*"
             className="hidden"
             onChange={e => {
-              const f = e.target.files?.[0]
-              if (f) doTranscribe(f)
+              const fs = Array.from(e.target.files || [])
+              if (fs.length) doUploadSrc(fs)
               e.target.value = ''
             }}
           />
-          <Button onClick={() => fileRef.current?.click()} disabled={transcribing}>
-            {transcribing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
-            {transcribing ? '转写中…' : '上传视频 / 音频扒稿'}
+          <Button onClick={() => fileRef.current?.click()} disabled={uploadPct !== null}>
+            {uploadPct !== null ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+            {uploadPct !== null ? `上传中 ${uploadPct}%` : '上传视频 / 音频'}
           </Button>
           <span className="text-xs text-muted-foreground">或</span>
-          <Button variant="outline" onClick={doCreate} disabled={transcribing}>
+          <Button variant="outline" onClick={doCreate} disabled={transcribingSrc}>
             <FilePlus2 className="w-4 h-4" /> 新建空白文稿（数字人口播）
           </Button>
-          {transcribing && (
-            <span className="text-xs text-muted-foreground animate-pulse">
-              本机 whisper 转写中，1 分钟音频约需 5-10 秒…
-            </span>
-          )}
         </div>
+
+        {/* 原素材列表 */}
+        {sources.length > 0 && (
+          <div className="mt-4 flex gap-2 overflow-x-auto pb-1">
+            {sources.map(m => (
+              <button
+                key={m.id}
+                onClick={() => setSrcId(m.id === srcId ? null : m.id)}
+                className={cn(
+                  'shrink-0 w-44 rounded-lg border p-2 text-left transition-colors',
+                  m.id === srcId
+                    ? 'border-primary bg-primary/5'
+                    : 'border-border bg-background hover:border-primary/40',
+                )}
+              >
+                <div className="h-16 rounded-md bg-secondary/60 overflow-hidden flex items-center justify-center">
+                  {m.thumb_url
+                    ? <img src={m.thumb_url} alt={m.name} className="w-full h-full object-cover" />
+                    : m.type === 'video' ? <Film className="w-5 h-5 text-muted-foreground" /> : <AudioLines className="w-5 h-5 text-muted-foreground" />}
+                </div>
+                <p className="mt-1.5 text-xs font-medium truncate">{m.name}</p>
+                <p className="text-[11px] text-muted-foreground">
+                  {m.type === 'video' ? '视频' : '音频'} · {formatDuration(m.duration)} · {formatSize(m.size)}
+                </p>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* 原素材详情 */}
+        {src && (
+          <div className="mt-4 rounded-lg border border-border bg-background p-4">
+            <div className="flex flex-col sm:flex-row gap-4">
+              {/* 预览 */}
+              <div className="shrink-0 w-full sm:w-56">
+                {src.type === 'video' ? (
+                  <video src={src.url} controls preload="metadata" className="w-full rounded-md bg-black aspect-video" />
+                ) : (
+                  <div className="rounded-md bg-secondary/40 p-4">
+                    <audio src={src.url} controls preload="metadata" className="w-full" />
+                  </div>
+                )}
+              </div>
+              {/* 信息 + 操作 */}
+              <div className="flex-1 min-w-0 space-y-3">
+                <div>
+                  <p className="text-sm font-medium truncate">{src.name}</p>
+                  <p className="text-[11px] text-muted-foreground mt-0.5">
+                    {src.type === 'video' ? '视频' : '音频'}
+                    {src.duration ? ` · ${formatDuration(src.duration)}` : ''}
+                    {src.width && src.height ? ` · ${src.width}×${src.height}` : ''}
+                    {` · ${formatSize(src.size)} · ${src.created_at}`}
+                  </p>
+                  <code className="block mt-1 text-[11px] text-muted-foreground truncate">{src.abs_path}</code>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  {src.type === 'video' && (
+                    <Button size="sm" variant="outline" onClick={doExtractAudio} disabled={extracting}>
+                      {extracting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileAudio className="w-3.5 h-3.5" />}
+                      {deriv?.audios.length ? '音频已提取（再看）' : '转音频'}
+                    </Button>
+                  )}
+                  <Button size="sm" variant="outline" onClick={doShowText} disabled={transcribingSrc}>
+                    {transcribingSrc ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileText className="w-3.5 h-3.5" />}
+                    {transcribingSrc ? '转写中…' : '转文字'}
+                  </Button>
+                  <Button size="sm" onClick={doOpenTimeline} disabled={transcribingSrc}>
+                    {transcribingSrc ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Clock className="w-3.5 h-3.5" />}
+                    转时间文字稿
+                  </Button>
+                </div>
+                {deriv?.audios.map(a => (
+                  <div key={a.id} className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <FileAudio className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate">{a.name}（{formatSize(a.size)}）</span>
+                    <audio src={a.url} controls preload="none" className="h-7 w-48" />
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* 纯文字稿面板 */}
+            {transcript && (
+              <div className="mt-4 rounded-lg border border-primary/25 bg-primary/5 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-medium">纯文字稿（{transcript.text.length} 字）</p>
+                  <div className="flex items-center gap-1">
+                    <Button
+                      variant="ghost" size="sm" className="h-7 px-2"
+                      onClick={async () => {
+                        try { await navigator.clipboard.writeText(transcript.text); toast.success('已复制') }
+                        catch { toast.error('复制失败') }
+                      }}
+                    >
+                      <Copy className="w-3.5 h-3.5" /> 复制
+                    </Button>
+                    <Button
+                      variant="ghost" size="sm" className="h-7 px-2"
+                      onClick={() => downloadText(`${src.name}.txt`, transcript.text)}
+                    >
+                      <Download className="w-3.5 h-3.5" /> 下载
+                    </Button>
+                    <Button variant="ghost" size="sm" className="h-7 px-2" onClick={() => setTranscript(null)}>
+                      <X className="w-3.5 h-3.5" />
+                    </Button>
+                  </div>
+                </div>
+                <p className="mt-2 max-h-40 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
+                  {transcript.text}
+                </p>
+              </div>
+            )}
+          </div>
+        )}
       </section>
 
       {/* ② 时间轴编辑区 */}
