@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router'
 import { toast } from 'sonner'
 import {
   AudioLines, Check, Clapperboard, Copy, FileImage, FileText, Film, LayoutGrid, List,
@@ -22,9 +23,9 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import {
-  deleteMaterial, formatDuration, formatSize, getDerivatives, getScript, getStats,
-  listCategories, listMaterials, listTags, saveScript, transcribeMaterial,
-  updateMaterial, uploadMaterials,
+  deleteMaterial, extractAudio, formatDuration, formatMs, formatSize, getDerivatives,
+  getScript, getStats, listCategories, listMaterials, listTags, saveScript,
+  transcribeMaterial, updateMaterial, uploadMaterials,
 } from '@/lib/api'
 import type { Derivatives } from '@/lib/api'
 import type { Category, Material, MaterialType, Script, Stats, Tag } from '@/types'
@@ -48,7 +49,12 @@ export default function Library() {
   const [categories, setCategories] = useState<Category[]>([])
   const [allTags, setAllTags] = useState<Tag[]>([])
   const [type, setType] = useState<MaterialType | ''>('')
-  const [origin, setOrigin] = useState<'user' | 'hot'>('user')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [origin, setOriginState] = useState<'user' | 'hot'>(searchParams.get('origin') === 'hot' ? 'hot' : 'user')
+  const setOrigin = (o: 'user' | 'hot') => {
+    setOriginState(o)
+    setSearchParams(o === 'hot' ? { origin: 'hot' } : {}, { replace: true })
+  }
   const [categoryId, setCategoryId] = useState<number | ''>('')
   const [tagIds, setTagIds] = useState<number[]>([])
   const [q, setQ] = useState('')
@@ -239,6 +245,7 @@ export default function Library() {
         categories={categories}
         onClose={() => setDetail(null)}
         onChanged={() => { setDetail(null); refresh() }}
+        onRefresh={refresh}
         onOpenScript={m => setScriptSrc(m)}
       />
       <ScriptDialog
@@ -452,37 +459,48 @@ function MaterialRow({ m, categories, onOpen }: { m: Material; categories: Categ
 }
 
 /* ---------- 详情弹窗 ---------- */
-function DetailDialog({ material, categories, onClose, onChanged, onOpenScript }: {
+function DetailDialog({ material, categories, onClose, onChanged, onRefresh, onOpenScript }: {
   material: Material | null
   categories: Category[]
   onClose: () => void
   onChanged: () => void
+  onRefresh: () => void
   onOpenScript: (m: Material) => void
 }) {
   const [name, setName] = useState('')
   const [categoryId, setCategoryId] = useState('none')
   const [source, setSource] = useState('')
+  const [link, setLink] = useState('')
   const [note, setNote] = useState('')
   const [tags, setTags] = useState('')
   const [saving, setSaving] = useState(false)
   const [confirmDel, setConfirmDel] = useState(false)
   const [copied, setCopied] = useState(false)
   const [hotDeriv, setHotDeriv] = useState<Derivatives | null>(null)
+  const [hotBusy, setHotBusy] = useState<null | 'audio' | 'script'>(null)
+  const [confirmRegen, setConfirmRegen] = useState<null | 'audio' | 'script'>(null)
+  const [showText, setShowText] = useState(false)
+
+  const refreshDeriv = useCallback(async (id: number) => {
+    const d = await getDerivatives(id).catch(() => null)
+    if (d) setHotDeriv(d)
+  }, [])
 
   useEffect(() => {
     if (material) {
       setName(material.name)
       setCategoryId(material.category_id ? String(material.category_id) : 'none')
       setSource(material.source || '')
+      setLink(material.link || '')
       setNote(material.note || '')
       setTags(material.tags.map(t => t.name).join(', '))
       setCopied(false)
       setHotDeriv(null)
-      if (material.origin === 'hot') {
-        getDerivatives(material.id).then(setHotDeriv).catch(() => { /* 忽略 */ })
-      }
+      setConfirmRegen(null)
+      setShowText(false)
+      if (material.origin === 'hot') refreshDeriv(material.id)
     }
-  }, [material])
+  }, [material, refreshDeriv])
 
   const meta = material ? TYPE_META[material.type] : null
 
@@ -494,6 +512,7 @@ function DetailDialog({ material, categories, onClose, onChanged, onOpenScript }
         name: name.trim() || material.name,
         category_id: categoryId === 'none' ? null : Number(categoryId),
         source: source.trim(),
+        link: link.trim(),
         note: note.trim(),
         tags: tags.split(/[,，]/).map(s => s.trim()).filter(Boolean),
       })
@@ -527,6 +546,39 @@ function DetailDialog({ material, categories, onClose, onChanged, onOpenScript }
       onChanged()
     } catch (e) {
       toast.error(e instanceof Error ? e.message : '删除失败')
+    }
+  }
+
+  /* 爆款加工：转音频 / 转写（force 时删除旧产物重跑） */
+  const runExtract = async (force: boolean) => {
+    if (!material || hotBusy) return
+    setConfirmRegen(null)
+    setHotBusy('audio')
+    try {
+      const a = await extractAudio(material.id, force)
+      toast.success(`${force ? '已重新提取' : '音频已生成'}：${formatSize(a.size)}`)
+      await refreshDeriv(material.id)
+      onRefresh()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '转音频失败')
+    } finally {
+      setHotBusy(null)
+    }
+  }
+  const runTranscribe = async (force: boolean) => {
+    if (!material || hotBusy) return
+    setConfirmRegen(null)
+    setHotBusy('script')
+    try {
+      toast.info('本机 whisper 转写中，请稍候…')
+      const s = await transcribeMaterial(material.id, force)
+      toast.success(`${force ? '已重新' : ''}转写完成：${s.segments.length} 段`)
+      await refreshDeriv(material.id)
+      onRefresh()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '转写失败')
+    } finally {
+      setHotBusy(null)
     }
   }
 
@@ -565,33 +617,115 @@ function DetailDialog({ material, categories, onClose, onChanged, onOpenScript }
                 )}
               </div>
 
-              {/* 爆款素材：加工状态 + 去复刻 */}
-              {material.origin === 'hot' && (
-                <div className="rounded-xl border border-primary/25 bg-primary/5 px-4 py-3 space-y-2">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <p className="text-xs font-medium">爆款素材 · 加工状态</p>
-                    <div className="flex items-center gap-2">
-                      <Button size="sm" variant="outline" className="h-8" onClick={() => onOpenScript(material)}>
-                        <FileText className="w-3.5 h-3.5" /> 时间轴文稿
-                      </Button>
+              {/* 爆款素材：加工流水线（转音频 / 转文字 / 时间文字稿） */}
+              {material.origin === 'hot' && (() => {
+                const audio = hotDeriv?.audios[0]
+                const script = hotDeriv?.scripts[0]
+                return (
+                  <div className="rounded-xl border border-primary/25 bg-primary/5 px-4 py-3 space-y-2.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-xs font-medium">爆款加工</p>
                       <a
                         href={`/hot?src=${material.id}`}
-                        className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-colors"
+                        className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-xs text-primary hover:bg-primary/10 transition-colors"
                       >
-                        <Clapperboard className="w-3.5 h-3.5" /> 在爆款复刻中打开
+                        <Clapperboard className="w-3.5 h-3.5" /> 去爆款复刻页
                       </a>
                     </div>
+
+                    {/* 音频（仅视频可提取） */}
+                    {material.type === 'video' && (
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <span className="w-14 shrink-0 text-muted-foreground">🎵 音频</span>
+                        {audio ? (
+                          <>
+                            <span className="text-muted-foreground">
+                              {formatSize(audio.size)} · 耗时 {formatMs(audio.gen_ms)}
+                            </span>
+                            <audio src={audio.url} controls preload="none" className="h-7 w-44" />
+                            <button
+                              onClick={() => setConfirmRegen('audio')}
+                              disabled={!!hotBusy}
+                              className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+                            >
+                              <RefreshCw className="w-3 h-3" /> 重新生成
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <span className="text-muted-foreground/60">未转化</span>
+                            <Button size="sm" variant="outline" className="h-7 px-2.5 text-xs" onClick={() => runExtract(false)} disabled={!!hotBusy}>
+                              {hotBusy === 'audio' ? <Loader2 className="w-3 h-3 animate-spin" /> : null}转音频
+                            </Button>
+                          </>
+                        )}
+                      </div>
+                    )}
+
+                    {/* 文字稿 */}
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      <span className="w-14 shrink-0 text-muted-foreground">📝 文字稿</span>
+                      {script ? (
+                        <>
+                          <span className="text-muted-foreground">
+                            {(script.transcript_text || '').length} 字 · 耗时 {formatMs(script.gen_ms)}
+                          </span>
+                          <button
+                            onClick={() => setShowText(true)}
+                            className="inline-flex items-center gap-1 text-primary hover:underline"
+                          >
+                            <FileText className="w-3 h-3" /> 查看
+                          </button>
+                          <button
+                            onClick={() => setConfirmRegen('script')}
+                            disabled={!!hotBusy}
+                            className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+                          >
+                            <RefreshCw className="w-3 h-3" /> 重新生成
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <span className="text-muted-foreground/60">未转化</span>
+                          <Button size="sm" variant="outline" className="h-7 px-2.5 text-xs" onClick={() => runTranscribe(false)} disabled={!!hotBusy}>
+                            {hotBusy === 'script' ? <Loader2 className="w-3 h-3 animate-spin" /> : null}转文字
+                          </Button>
+                        </>
+                      )}
+                    </div>
+
+                    {/* 时间文字稿 */}
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      <span className="w-14 shrink-0 text-muted-foreground">🕐 时间稿</span>
+                      {script ? (
+                        <>
+                          <span className="text-muted-foreground">{script.segment_count} 段</span>
+                          <button
+                            onClick={() => onOpenScript(material)}
+                            className="inline-flex items-center gap-1 text-primary hover:underline"
+                          >
+                            <FileText className="w-3 h-3" /> 打开时间轴
+                          </button>
+                          <button
+                            onClick={() => setConfirmRegen('script')}
+                            disabled={!!hotBusy}
+                            className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+                          >
+                            <RefreshCw className="w-3 h-3" /> 重新生成
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <span className="text-muted-foreground/60">未转化</span>
+                          <Button size="sm" variant="outline" className="h-7 px-2.5 text-xs" onClick={() => runTranscribe(false)} disabled={!!hotBusy}>
+                            {hotBusy === 'script' ? <Loader2 className="w-3 h-3 animate-spin" /> : null}转时间文字稿
+                          </Button>
+                        </>
+                      )}
+                    </div>
                   </div>
-                  <div className="flex flex-wrap gap-1.5 text-[11px]">
-                    {hotDeriv?.audios.length
-                      ? <span className="px-1.5 py-0.5 rounded-md bg-amber-500/15 text-amber-400">🎵 已转音频：{hotDeriv.audios[0].name}</span>
-                      : <span className="px-1.5 py-0.5 rounded-md bg-secondary text-muted-foreground">🎵 未转音频</span>}
-                    {hotDeriv?.scripts.length
-                      ? <span className="px-1.5 py-0.5 rounded-md bg-primary/15 text-primary">📝 已转文字稿：{hotDeriv.scripts[0].segment_count} 段</span>
-                      : <span className="px-1.5 py-0.5 rounded-md bg-secondary text-muted-foreground">📝 未转文字稿</span>}
-                  </div>
-                </div>
-              )}
+                )
+              })()}
 
               {/* 编辑表单 */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -616,6 +750,10 @@ function DetailDialog({ material, categories, onClose, onChanged, onOpenScript }
                 <label className="space-y-1.5">
                   <span className="text-xs text-muted-foreground">来源</span>
                   <Input value={source} onChange={e => setSource(e.target.value)} placeholder="例：AI 生成 / 实拍 / 素材网站" />
+                </label>
+                <label className="space-y-1.5">
+                  <span className="text-xs text-muted-foreground">链接（原视频 URL）</span>
+                  <Input value={link} onChange={e => setLink(e.target.value)} placeholder="例：https://v.douyin.com/…" />
                 </label>
                 <label className="space-y-1.5">
                   <span className="text-xs text-muted-foreground">备注</span>
@@ -660,6 +798,59 @@ function DetailDialog({ material, categories, onClose, onChanged, onOpenScript }
             <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction onClick={doDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
               确认删除
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* 文字稿查看弹窗 */}
+      <Dialog open={showText} onOpenChange={setShowText}>
+        <DialogContent className="max-w-xl max-h-[80dvh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileText className="w-4 h-4 text-primary" /> 文字稿
+            </DialogTitle>
+            <DialogDescription>
+              {hotDeriv?.scripts[0] ? `${(hotDeriv.scripts[0].transcript_text || '').length} 字 · 转写耗时 ${formatMs(hotDeriv.scripts[0].gen_ms)}` : ''}
+            </DialogDescription>
+          </DialogHeader>
+          <p className="whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">
+            {hotDeriv?.scripts[0]?.transcript_text || '（无内容）'}
+          </p>
+          <div className="flex justify-end">
+            <Button
+              variant="outline" size="sm"
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(hotDeriv?.scripts[0]?.transcript_text || '')
+                  toast.success('已复制')
+                } catch { toast.error('复制失败') }
+              }}
+            >
+              <Copy className="w-3.5 h-3.5" /> 复制全文
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* 爆款加工：重新生成确认 */}
+      <AlertDialog open={!!confirmRegen} onOpenChange={open => { if (!open) setConfirmRegen(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{confirmRegen === 'audio' ? '重新生成音频？' : '重新生成文字稿？'}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {confirmRegen === 'audio'
+                ? '将删除已提取的音频文件，重新从视频提取。'
+                : '将删除当前文字稿和时间轴文稿（包括手动修改），用 whisper 重新转写，此操作不可恢复。'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => (confirmRegen === 'audio' ? runExtract(true) : runTranscribe(true))}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              删除并重新生成
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

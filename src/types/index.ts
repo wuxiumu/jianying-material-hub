@@ -25,6 +25,8 @@ export interface Material {
   tags: Tag[]
   derived_from?: number | null
   origin?: 'user' | 'hot'
+  link?: string
+  gen_ms?: number | null
   audio_count?: number
   script_count?: number
   created_at: string
@@ -71,6 +73,7 @@ export interface Script {
   bg_material_id: number | null
   material_id?: number | null
   transcript_text?: string | null
+  gen_ms?: number | null
   segment_count?: number
   segments: Segment[]
   created_at?: string

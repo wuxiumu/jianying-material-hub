@@ -146,16 +146,17 @@ app.patch('/api/materials/:id', (req, res) => {
   const id = Number(req.params.id);
   const row = db.prepare(`SELECT * FROM materials WHERE id = ?`).get(id);
   if (!row) return res.status(404).json({ error: '素材不存在' });
-  const { name, category_id, note, source, tags } = req.body || {};
+  const { name, category_id, note, source, link, tags } = req.body || {};
   db.prepare(`
     UPDATE materials SET
       name = COALESCE(?, name),
       category_id = ?,
       note = COALESCE(?, note),
       source = COALESCE(?, source),
+      link = COALESCE(?, link),
       updated_at = datetime('now', 'localtime')
     WHERE id = ?
-  `).run(name ?? null, category_id === undefined ? row.category_id : (category_id || null), note ?? null, source ?? null, id);
+  `).run(name ?? null, category_id === undefined ? row.category_id : (category_id || null), note ?? null, source ?? null, link ?? null, id);
   if (Array.isArray(tags)) setTagsOf(id, tags);
   res.json(row2json(db.prepare(`SELECT * FROM materials WHERE id = ?`).get(id)));
 });
@@ -198,12 +199,14 @@ app.post('/api/materials/:id/extract-audio', async (req, res) => {
   const fname = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}.mp3`;
   const rel = path.join('media', 'audio', fname);
   try {
+    const t0 = Date.now();
     await runCmd(FFMPEG, ['-y', '-i', abs, '-vn', '-c:a', 'libmp3lame', '-q:a', '4', path.join(DATA_DIR, rel)], 300000);
+    const genMs = Date.now() - t0;
     const size = fs.statSync(path.join(DATA_DIR, rel)).size;
     const info = db.prepare(`
-      INSERT INTO materials (name, type, path, size, duration, derived_from, source)
-      VALUES (?, 'audio', ?, ?, ?, ?, ?)
-    `).run(`${row.name}（音频）`, rel, size, row.duration ?? null, id, `提取自素材 #${id}`);
+      INSERT INTO materials (name, type, path, size, duration, derived_from, source, gen_ms)
+      VALUES (?, 'audio', ?, ?, ?, ?, ?, ?)
+    `).run(`${row.name}（音频）`, rel, size, row.duration ?? null, id, `提取自素材 #${id}`, genMs);
     res.json(row2json(db.prepare(`SELECT * FROM materials WHERE id = ?`).get(Number(info.lastInsertRowid))));
   } catch (e) {
     try { fs.unlinkSync(path.join(DATA_DIR, rel)); } catch { /* 忽略 */ }
@@ -226,12 +229,14 @@ app.post('/api/materials/:id/transcribe', async (req, res) => {
   const abs = path.join(DATA_DIR, row.path);
   if (!fs.existsSync(abs)) return res.status(400).json({ error: '源文件已丢失' });
   try {
+    const t0 = Date.now();
     const { duration, segments } = await transcribeFile(abs);
+    const genMs = Date.now() - t0;
     const transcript = segments.map(s => s.text).join('\n');
     const info = db.prepare(`
-      INSERT INTO scripts (title, source_type, source_name, duration, material_id, transcript_text)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(row.name, row.type, row.name, duration, id, transcript);
+      INSERT INTO scripts (title, source_type, source_name, duration, material_id, transcript_text, gen_ms)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(row.name, row.type, row.name, duration, id, transcript, genMs);
     const scriptId = Number(info.lastInsertRowid);
     const ins = db.prepare(`INSERT INTO segments (script_id, ord, start, end, text) VALUES (?, ?, ?, ?, ?)`);
     segments.forEach((s, i) => ins.run(scriptId, i, s.start, s.end, s.text));

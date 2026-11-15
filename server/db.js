@@ -89,6 +89,9 @@ const addCol = (table, col, ddl) => {
 };
 addCol('materials', 'derived_from', 'INTEGER REFERENCES materials(id) ON DELETE SET NULL'); // 派生来源（如视频提取出的音频）
 addCol('materials', 'origin', "TEXT NOT NULL DEFAULT 'user'");                                // 来源库：user 我的素材 / hot 爆款素材
+addCol('materials', 'link', "TEXT NOT NULL DEFAULT ''");                                      // 来源链接（如抖音/B站原视频地址）
+addCol('materials', 'gen_ms', 'INTEGER');                                                     // 加工耗时（毫秒，如提取音频）
+addCol('scripts', 'gen_ms', 'INTEGER');                                                       // 转写耗时（毫秒）
 addCol('scripts', 'material_id', 'INTEGER REFERENCES materials(id) ON DELETE SET NULL');    // 文稿关联的原素材
 addCol('scripts', 'transcript_text', 'TEXT');                                                // 纯文字稿（无时间戳）
 

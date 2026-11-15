@@ -35,7 +35,7 @@ export function listMaterials(p: ListParams) {
 
 export const getMaterial = (id: number) => req<Material>(`/materials/${id}`)
 
-export function updateMaterial(id: number, data: Partial<Pick<Material, 'name' | 'category_id' | 'note' | 'source'>> & { tags?: string[] }) {
+export function updateMaterial(id: number, data: Partial<Pick<Material, 'name' | 'category_id' | 'note' | 'source' | 'link'>> & { tags?: string[] }) {
   return req<Material>(`/materials/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
@@ -212,4 +212,10 @@ export function formatDuration(sec: number | null): string {
   const m = Math.floor(sec / 60)
   const s = Math.round(sec % 60)
   return `${m}:${String(s).padStart(2, '0')}`
+}
+
+/** 加工耗时：1234ms → "1.2s"，null → "—" */
+export function formatMs(ms: number | null | undefined): string {
+  if (ms == null) return '—'
+  return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`
 }
