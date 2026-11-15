@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import {
-  AudioLines, Check, Clapperboard, Copy, FileImage, Film, LayoutGrid, List,
-  Loader2, Music, Pencil, Search, Trash2, Upload, X,
+  AudioLines, Check, Clapperboard, Copy, FileImage, FileText, Film, LayoutGrid, List,
+  Loader2, Music, Pencil, Plus, RefreshCw, Save, Search, Trash2, Upload, X,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -22,11 +22,12 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import {
-  deleteMaterial, formatDuration, formatSize, getDerivatives, getStats, listCategories,
-  listMaterials, listTags, updateMaterial, uploadMaterials,
+  deleteMaterial, formatDuration, formatSize, getDerivatives, getScript, getStats,
+  listCategories, listMaterials, listTags, saveScript, transcribeMaterial,
+  updateMaterial, uploadMaterials,
 } from '@/lib/api'
 import type { Derivatives } from '@/lib/api'
-import type { Category, Material, MaterialType, Stats, Tag } from '@/types'
+import type { Category, Material, MaterialType, Script, Stats, Tag } from '@/types'
 import { cn } from '@/lib/utils'
 
 const PAGE_SIZE = 24
@@ -54,6 +55,7 @@ export default function Library() {
   const [qDebounced, setQDebounced] = useState('')
   const [view, setView] = useState<'grid' | 'list'>('grid')
   const [detail, setDetail] = useState<Material | null>(null)
+  const [scriptSrc, setScriptSrc] = useState<Material | null>(null)
 
   // 搜索防抖
   useEffect(() => {
@@ -237,6 +239,12 @@ export default function Library() {
         categories={categories}
         onClose={() => setDetail(null)}
         onChanged={() => { setDetail(null); refresh() }}
+        onOpenScript={m => setScriptSrc(m)}
+      />
+      <ScriptDialog
+        material={scriptSrc}
+        onClose={() => setScriptSrc(null)}
+        onChanged={refresh}
       />
     </div>
   )
@@ -444,11 +452,12 @@ function MaterialRow({ m, categories, onOpen }: { m: Material; categories: Categ
 }
 
 /* ---------- 详情弹窗 ---------- */
-function DetailDialog({ material, categories, onClose, onChanged }: {
+function DetailDialog({ material, categories, onClose, onChanged, onOpenScript }: {
   material: Material | null
   categories: Category[]
   onClose: () => void
   onChanged: () => void
+  onOpenScript: (m: Material) => void
 }) {
   const [name, setName] = useState('')
   const [categoryId, setCategoryId] = useState('none')
@@ -561,12 +570,17 @@ function DetailDialog({ material, categories, onClose, onChanged }: {
                 <div className="rounded-xl border border-primary/25 bg-primary/5 px-4 py-3 space-y-2">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <p className="text-xs font-medium">爆款素材 · 加工状态</p>
-                    <a
-                      href={`/hot?src=${material.id}`}
-                      className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-colors"
-                    >
-                      <Clapperboard className="w-3.5 h-3.5" /> 在爆款复刻中打开
-                    </a>
+                    <div className="flex items-center gap-2">
+                      <Button size="sm" variant="outline" className="h-8" onClick={() => onOpenScript(material)}>
+                        <FileText className="w-3.5 h-3.5" /> 时间轴文稿
+                      </Button>
+                      <a
+                        href={`/hot?src=${material.id}`}
+                        className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-colors"
+                      >
+                        <Clapperboard className="w-3.5 h-3.5" /> 在爆款复刻中打开
+                      </a>
+                    </div>
                   </div>
                   <div className="flex flex-wrap gap-1.5 text-[11px]">
                     {hotDeriv?.audios.length
@@ -646,6 +660,245 @@ function DetailDialog({ material, categories, onClose, onChanged }: {
             <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction onClick={doDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
               确认删除
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
+  )
+}
+
+/* ---------- 爆款素材：时间轴文稿弹窗（预览 / 编辑 / 复制 / 重新生成） ---------- */
+type SegDraft = { start: number; end: number; text: string }
+
+function ScriptDialog({ material, onClose, onChanged }: {
+  material: Material | null
+  onClose: () => void
+  onChanged: () => void
+}) {
+  const [script, setScript] = useState<Script | null>(null)
+  const [segments, setSegments] = useState<SegDraft[]>([])
+  const [loading, setLoading] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [regen, setRegen] = useState(false)
+  const [confirmRegen, setConfirmRegen] = useState(false)
+  const [dirty, setDirty] = useState(false)
+
+  const load = useCallback(async () => {
+    if (!material) return
+    setLoading(true)
+    try {
+      const d = await getDerivatives(material.id)
+      const sc = d.scripts[0]
+      if (sc) {
+        const full = await getScript(sc.id)
+        setScript(full)
+        setSegments(full.segments.map(s => ({ start: s.start, end: s.end, text: s.text })))
+      } else {
+        setScript(null)
+        setSegments([])
+      }
+    } catch {
+      toast.error('加载文稿失败')
+    } finally {
+      setLoading(false)
+    }
+  }, [material])
+
+  useEffect(() => {
+    setDirty(false)
+    setConfirmRegen(false)
+    setScript(null)
+    setSegments([])
+    if (material) load()
+  }, [material, load])
+
+  const editSeg = (i: number, patch: Partial<SegDraft>) => {
+    setSegments(prev => prev.map((s, idx) => (idx === i ? { ...s, ...patch } : s)))
+    setDirty(true)
+  }
+  const insertAfter = (i: number) => {
+    setSegments(prev => {
+      const at = prev[i]
+      const ns = { start: at.end, end: at.end + (at.end - at.start || 3), text: '' }
+      return [...prev.slice(0, i + 1), ns, ...prev.slice(i + 1)]
+    })
+    setDirty(true)
+  }
+  const removeSeg = (i: number) => {
+    setSegments(prev => prev.filter((_, idx) => idx !== i))
+    setDirty(true)
+  }
+
+  const doSave = async () => {
+    if (!script || saving) return
+    for (let i = 0; i < segments.length; i++) {
+      if (!(segments[i].end > segments[i].start)) {
+        toast.error(`第 ${i + 1} 段结束时间必须大于开始时间`)
+        return
+      }
+    }
+    setSaving(true)
+    try {
+      const saved = await saveScript(script.id, { title: script.title, segments })
+      setScript(saved)
+      setSegments(saved.segments.map(s => ({ start: s.start, end: s.end, text: s.text })))
+      setDirty(false)
+      toast.success('文稿已保存')
+      onChanged()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '保存失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const doGenerate = async (force: boolean) => {
+    if (!material || regen) return
+    setConfirmRegen(false)
+    setRegen(true)
+    try {
+      toast.info('本机 whisper 转写中，请稍候…')
+      const s = await transcribeMaterial(material.id, force)
+      setScript(s)
+      setSegments(s.segments.map(x => ({ start: x.start, end: x.end, text: x.text })))
+      setDirty(false)
+      toast.success(`${force ? '已重新' : ''}转写完成：${s.segments.length} 段`)
+      onChanged()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '转写失败')
+    } finally {
+      setRegen(false)
+    }
+  }
+
+  const doCopy = async () => {
+    const text = segments.filter(s => s.text.trim()).map(s => s.text.trim()).join('\n')
+    if (!text) { toast.error('还没有文字内容'); return }
+    try {
+      await navigator.clipboard.writeText(text)
+      toast.success('文稿已复制（纯文字）')
+    } catch {
+      toast.error('复制失败')
+    }
+  }
+
+  const total = Math.max(...segments.map(s => s.end), 0)
+
+  return (
+    <>
+      <Dialog open={!!material} onOpenChange={open => { if (!open) onClose() }}>
+        <DialogContent className="max-w-2xl max-h-[90dvh] overflow-y-auto">
+          {material && (
+            <>
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  <FileText className="w-4 h-4 text-primary" />
+                  时间轴文稿
+                </DialogTitle>
+                <DialogDescription className="truncate">
+                  {material.name}
+                  {script ? ` · ${segments.length} 段 · 总时长 ${total.toFixed(1)}s` : ''}
+                  {dirty ? ' · 有未保存修改' : ''}
+                </DialogDescription>
+              </DialogHeader>
+
+              {loading ? (
+                <div className="py-16 flex items-center justify-center text-muted-foreground text-sm gap-2">
+                  <Loader2 className="w-4 h-4 animate-spin" /> 加载文稿…
+                </div>
+              ) : !script ? (
+                <div className="py-12 text-center space-y-3">
+                  <p className="text-sm text-muted-foreground">这个爆款素材还没有时间轴文稿</p>
+                  <Button onClick={() => doGenerate(false)} disabled={regen}>
+                    {regen ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileText className="w-4 h-4" />}
+                    {regen ? '转写中…' : '生成时间文字稿'}
+                  </Button>
+                </div>
+              ) : (
+                <>
+                  <div className="space-y-2 max-h-[46dvh] overflow-y-auto pr-1">
+                    {segments.map((s, i) => (
+                      <div key={i} className="flex items-center gap-2">
+                        <span className="w-6 text-xs text-muted-foreground text-right shrink-0">{i + 1}</span>
+                        <input
+                          type="number" step={0.1} min={0} value={s.start}
+                          aria-label={`第 ${i + 1} 段开始时间`}
+                          onChange={e => editSeg(i, { start: Number(e.target.value) })}
+                          className="w-16 h-8 rounded-md border border-input bg-background px-1.5 text-xs font-mono text-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        />
+                        <span className="text-muted-foreground text-xs">→</span>
+                        <input
+                          type="number" step={0.1} min={0} value={s.end}
+                          aria-label={`第 ${i + 1} 段结束时间`}
+                          onChange={e => editSeg(i, { end: Number(e.target.value) })}
+                          className="w-16 h-8 rounded-md border border-input bg-background px-1.5 text-xs font-mono text-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        />
+                        <Input
+                          value={s.text}
+                          onChange={e => editSeg(i, { text: e.target.value })}
+                          placeholder={`第 ${i + 1} 句…`}
+                          className="flex-1 h-8 text-xs"
+                        />
+                        <button
+                          onClick={() => insertAfter(i)}
+                          aria-label={`在第 ${i + 1} 段后插入`}
+                          title="插入一段"
+                          className="p-1 rounded-md text-muted-foreground hover:text-primary hover:bg-accent transition-colors"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => removeSeg(i)}
+                          aria-label={`删除第 ${i + 1} 段`}
+                          title="删除这一段"
+                          className="p-1 rounded-md text-muted-foreground hover:text-destructive hover:bg-accent transition-colors"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                    <Button
+                      variant="outline" size="sm"
+                      className="text-destructive border-destructive/30 hover:bg-destructive/10"
+                      onClick={() => setConfirmRegen(true)}
+                      disabled={regen || saving}
+                    >
+                      {regen ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                      {regen ? '转写中…' : '重新生成'}
+                    </Button>
+                    <div className="flex items-center gap-2">
+                      <Button variant="outline" size="sm" onClick={doCopy}>
+                        <Copy className="w-3.5 h-3.5" /> 复制文稿
+                      </Button>
+                      <Button size="sm" onClick={doSave} disabled={saving || !dirty}>
+                        {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                        {dirty ? '保存修改' : '已保存'}
+                      </Button>
+                    </div>
+                  </div>
+                </>
+              )}
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog open={confirmRegen} onOpenChange={setConfirmRegen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>重新生成时间轴文稿？</AlertDialogTitle>
+            <AlertDialogDescription>
+              将删除当前文稿（包括你手动修改的内容），用 whisper 重新转写，此操作不可恢复。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction onClick={() => doGenerate(true)} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+              删除并重新生成
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
