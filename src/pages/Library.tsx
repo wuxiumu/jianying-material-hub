@@ -472,7 +472,8 @@ function DetailDialog({ material, categories, onClose, onChanged, onRefresh, onO
   const [source, setSource] = useState('')
   const [link, setLink] = useState('')
   const [note, setNote] = useState('')
-  const [tags, setTags] = useState('')
+  const [tagsList, setTagsList] = useState<string[]>([])
+  const [tagInput, setTagInput] = useState('')
   const [saving, setSaving] = useState(false)
   const [confirmDel, setConfirmDel] = useState(false)
   const [copied, setCopied] = useState(false)
@@ -493,7 +494,8 @@ function DetailDialog({ material, categories, onClose, onChanged, onRefresh, onO
       setSource(material.source || '')
       setLink(material.link || '')
       setNote(material.note || '')
-      setTags(material.tags.map(t => t.name).join(', '))
+      setTagsList(material.tags.map(t => t.name))
+      setTagInput('')
       setCopied(false)
       setHotDeriv(null)
       setConfirmRegen(null)
@@ -514,7 +516,7 @@ function DetailDialog({ material, categories, onClose, onChanged, onRefresh, onO
         source: source.trim(),
         link: link.trim(),
         note: note.trim(),
-        tags: tags.split(/[,，]/).map(s => s.trim()).filter(Boolean),
+        tags: tagsList,
       })
       toast.success('已保存')
       onChanged()
@@ -585,10 +587,10 @@ function DetailDialog({ material, categories, onClose, onChanged, onRefresh, onO
   return (
     <>
       <Dialog open={!!material} onOpenChange={open => { if (!open) onClose() }}>
-        <DialogContent className="max-w-3xl max-h-[90dvh] overflow-y-auto">
+        <DialogContent className="max-w-5xl h-[88dvh] flex flex-col overflow-hidden">
           {material && meta && (
             <>
-              <DialogHeader>
+              <DialogHeader className="shrink-0">
                 <DialogTitle className="flex items-center gap-2">
                   <span className={cn('text-[10px] px-1.5 py-0.5 rounded-md font-medium', meta.color)}>{meta.label}</span>
                   {material.name}
@@ -601,16 +603,17 @@ function DetailDialog({ material, categories, onClose, onChanged, onRefresh, onO
                 </DialogDescription>
               </DialogHeader>
 
-              {/* 预览 */}
-              <div className="rounded-xl overflow-hidden bg-secondary/50 border border-border">
+              <div className="flex-1 min-h-0 overflow-y-auto space-y-4 pr-1">
+              {/* 预览（限制高度，不抢占表单空间） */}
+              <div className="rounded-xl overflow-hidden bg-secondary/50 border border-border flex justify-center">
                 {material.type === 'video' && (
-                  <video src={material.url} controls className="w-full max-h-80" />
+                  <video src={material.url} controls className="max-h-52 max-w-full" />
                 )}
                 {material.type === 'image' && (
-                  <img src={material.url} alt={material.name} className="w-full max-h-80 object-contain" />
+                  <img src={material.url} alt={material.name} className="max-h-52 max-w-full object-contain" />
                 )}
                 {material.type === 'audio' && (
-                  <div className="p-6 flex items-center gap-3">
+                  <div className="p-4 flex items-center gap-3 w-full">
                     <Music className="w-6 h-6 text-amber-400 shrink-0" />
                     <audio src={material.url} controls className="w-full" />
                   </div>
@@ -743,10 +746,53 @@ function DetailDialog({ material, categories, onClose, onChanged, onRefresh, onO
                     </SelectContent>
                   </Select>
                 </label>
-                <label className="space-y-1.5 md:col-span-2">
-                  <span className="text-xs text-muted-foreground">标签（用逗号分隔，可新增）</span>
-                  <Input value={tags} onChange={e => setTags(e.target.value)} placeholder="例：口播, 开头钩子, 产品特写" />
-                </label>
+                <div className="space-y-1.5 md:col-span-2">
+                  <span className="text-xs text-muted-foreground">标签（回车添加一个，点 × 移除）</span>
+                  <div
+                    className="flex flex-wrap items-center gap-1.5 rounded-md border border-input bg-background px-2 py-1.5 min-h-9 cursor-text focus-within:ring-2 focus-within:ring-ring"
+                    onClick={e => (e.currentTarget.querySelector('input') as HTMLInputElement | null)?.focus()}
+                  >
+                    {tagsList.map(t => (
+                      <span key={t} className="inline-flex items-center gap-1 rounded-md bg-primary/10 text-primary px-2 py-0.5 text-xs">
+                        {t}
+                        <button
+                          type="button"
+                          aria-label={`移除标签 ${t}`}
+                          onClick={() => setTagsList(prev => prev.filter(x => x !== t))}
+                          className="text-primary/60 hover:text-primary"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </span>
+                    ))}
+                    <input
+                      value={tagInput}
+                      onChange={e => {
+                        const v = e.target.value
+                        // 逗号也直接成标签（兼容旧习惯）
+                        if (/[,，]$/.test(v)) {
+                          const t = v.slice(0, -1).trim()
+                          if (t && !tagsList.includes(t)) setTagsList(prev => [...prev, t])
+                          setTagInput('')
+                        } else {
+                          setTagInput(v)
+                        }
+                      }}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault()
+                          const t = tagInput.trim()
+                          if (t && !tagsList.includes(t)) setTagsList(prev => [...prev, t])
+                          setTagInput('')
+                        } else if (e.key === 'Backspace' && !tagInput && tagsList.length) {
+                          setTagsList(prev => prev.slice(0, -1))
+                        }
+                      }}
+                      placeholder={tagsList.length ? '' : '输入后回车，例：口播'}
+                      className="flex-1 min-w-28 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+                    />
+                  </div>
+                </div>
                 <label className="space-y-1.5">
                   <span className="text-xs text-muted-foreground">来源</span>
                   <Input value={source} onChange={e => setSource(e.target.value)} placeholder="例：AI 生成 / 实拍 / 素材网站" />
@@ -772,7 +818,10 @@ function DetailDialog({ material, categories, onClose, onChanged, onRefresh, onO
                 </Button>
               </div>
 
-              <div className="flex items-center justify-between pt-1">
+              </div>{/* 滚动内容区结束 */}
+
+              {/* 底部操作栏固定 */}
+              <div className="shrink-0 flex items-center justify-between border-t border-border pt-3 mt-1">
                 <Button variant="destructive" size="sm" onClick={() => setConfirmDel(true)}>
                   <Trash2 className="w-3.5 h-3.5" /> 删除素材
                 </Button>
